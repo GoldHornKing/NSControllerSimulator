@@ -180,6 +180,22 @@ body {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.42);
 }
 
+.page-tab-link {
+  text-decoration: none;
+}
+
+.page-tab-link-simulator {
+  margin-left: auto;
+  background: linear-gradient(135deg, rgba(19, 34, 56, 0.95), rgba(64, 84, 112, 0.95));
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 14px 28px rgba(19, 34, 56, 0.2);
+}
+
+.page-tab-link-simulator .page-tab-meta {
+  color: rgba(255, 255, 255, 0.78);
+}
+
 .page-tab-title {
   display: block;
   font-size: 17px;
@@ -1777,6 +1793,10 @@ input[type="range"]:focus-visible,
 
   .page-tab {
     min-width: 100%;
+  }
+
+  .page-tab-link-simulator {
+    margin-left: 0;
   }
 
   .studio-connection-card,
