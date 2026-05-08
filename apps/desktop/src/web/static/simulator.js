@@ -751,6 +751,10 @@
         payload.ackTimeoutMs = options.ackTimeoutMs;
       }
 
+      if (Number.isFinite(options.retries) && options.retries >= 0) {
+        payload.retries = options.retries;
+      }
+
       const res = await fetch("/api/controller/send", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1003,7 +1007,9 @@
   closeBtn.addEventListener("click", closeConnection);
   infoBtn.addEventListener("click", () => sendCommands(["I"], "Query Status", { ackTimeoutMs: 10000 }));
   resetBtn.addEventListener("click", () => sendCommands(["BT RESET"], "Reset Bluetooth"));
-  pairLrBtn.addEventListener("click", () => sendCommands(["BTN L+R"], "L+R Pairing"));
+  pairLrBtn.addEventListener("click", () =>
+    sendCommands(["BTN L+R"], "L+R Pairing", { ackTimeoutMs: 15000, retries: 2 })
+  );
   clearLogBtn.addEventListener("click", clearLog);
   clearComboBtn.addEventListener("click", () => {
     comboCommandsEl.value = "";
