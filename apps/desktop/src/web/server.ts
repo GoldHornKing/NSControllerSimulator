@@ -1656,6 +1656,7 @@ async function handleControllerSend(request: IncomingMessage, response: ServerRe
     commands?: string[];
     ackTimeoutMs?: number;
     retries?: number;
+    persistConnection?: boolean;
     startLine?: number;
     endLine?: number;
   };
@@ -1671,6 +1672,7 @@ async function handleControllerSend(request: IncomingMessage, response: ServerRe
 
     const ackTimeoutMs = body.ackTimeoutMs ?? 5_000;
     const retries = body.retries ?? 1;
+    const persistConnection = body.persistConnection ?? true;
     const lines: string[] = [`INFO target=serial commands=${body.commands.length}`];
     const startLine = Number.isInteger(body.startLine) ? body.startLine : undefined;
     const endLine = Number.isInteger(body.endLine) ? body.endLine : undefined;
@@ -1683,6 +1685,8 @@ async function handleControllerSend(request: IncomingMessage, response: ServerRe
       lines.push(`INFO endLine=${endLine}`);
     }
 
+    lines.push(`INFO persistConnection=${persistConnection ? "true" : "false"}`);
+
     await controllerConnection.sender.send(body.commands, {
       ackTimeoutMs,
       retries,
@@ -1690,6 +1694,17 @@ async function handleControllerSend(request: IncomingMessage, response: ServerRe
         lines.push(line);
       },
     });
+
+    if (!persistConnection) {
+      await controllerConnection.sender.close();
+      controllerConnection = {
+        sender: null,
+        portPath: null,
+        baudRate: null,
+        open: false,
+      };
+      lines.push("INFO connection=closed reason=persistConnection=false");
+    }
 
     lines.push("INFO completed");
 
@@ -1699,6 +1714,7 @@ async function handleControllerSend(request: IncomingMessage, response: ServerRe
       totalCommands: body.commands.length,
       startLine,
       endLine,
+      connection: snapshotControllerConnection(),
       lines,
     });
   } catch (error) {

@@ -684,6 +684,7 @@
           body: JSON.stringify({
             commands: OPEN_WARMUP_COMMANDS,
             ackTimeoutMs: OPEN_WARMUP_ACK_TIMEOUT_MS,
+            persistConnection: true,
           }),
         });
         const warmupPayload = await warmupResponse.json();
@@ -745,6 +746,7 @@
     try {
       const payload = {
         commands,
+        persistConnection: true,
       };
 
       if (Number.isFinite(options.ackTimeoutMs) && options.ackTimeoutMs > 0) {
@@ -784,6 +786,7 @@
 
     const payload = {
       commands,
+      persistConnection: true,
     };
 
     if (Number.isFinite(options.ackTimeoutMs) && options.ackTimeoutMs > 0) {
