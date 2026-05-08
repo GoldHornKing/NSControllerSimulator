@@ -1003,7 +1003,7 @@
   closeBtn.addEventListener("click", closeConnection);
   infoBtn.addEventListener("click", () => sendCommands(["I"], "Query Status", { ackTimeoutMs: 10000 }));
   resetBtn.addEventListener("click", () => sendCommands(["BT RESET"], "Reset Bluetooth"));
-  pairLrBtn.addEventListener("click", () => sendCommands(["E", "BTN L+R"], "L+R Pairing"));
+  pairLrBtn.addEventListener("click", () => sendCommands(["BTN L+R"], "L+R Pairing"));
   clearLogBtn.addEventListener("click", clearLog);
   clearComboBtn.addEventListener("click", () => {
     comboCommandsEl.value = "";
