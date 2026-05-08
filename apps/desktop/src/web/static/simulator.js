@@ -38,6 +38,17 @@
   const DEFAULT_LOG_TEXT = "Simulator ready...";
   const MAX_RENDERED_LOG_LINES = 5000;
 
+  // Default timing config (matches main page defaults)
+  const DEFAULT_TIMING = {
+    buttonPressDuration: 60,
+    inputDelay: 30,
+    homeDuration: 1800,
+  };
+
+  function buildTimingConfigCommand() {
+    return `CFG INPUT ${DEFAULT_TIMING.buttonPressDuration} ${DEFAULT_TIMING.inputDelay} ${DEFAULT_TIMING.homeDuration}`;
+  }
+
   // ── State ─────────────────────────────────────────────────────────────────
   let connectionOpen = false;
   let busy = false;
@@ -1060,7 +1071,7 @@
   document.querySelectorAll("[data-ctrl]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const cmd = btn.dataset.ctrl;
-      sendCommands([cmd], cmd);
+      sendCommands([buildTimingConfigCommand(), cmd], cmd);
     });
   });
 
