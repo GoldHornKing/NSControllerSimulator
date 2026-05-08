@@ -29,6 +29,7 @@ import { listPortInfos, preferSerialPath } from "../serial/listPorts.js";
 import {
   SerialSessionManager,
   type SerialSessionSnapshot,
+  SerialPersistentSender
 } from "../serial/sender.js";
 import { SimulatedAckSender } from "../simulator/sender.js";
 import type { ResumePlan, SenderControls } from "../types.js";
@@ -223,6 +224,20 @@ function createEmptyExecution(): ManagedExecution {
 
 let managedExecution: ManagedExecution = createEmptyExecution();
 
+interface ControllerConnectionState {
+  sender: SerialPersistentSender | null;
+  portPath: string | null;
+  baudRate: number | null;
+  open: boolean;
+}
+
+let controllerConnection: ControllerConnectionState = {
+  sender: null,
+  portPath: null,
+  baudRate: null,
+  open: false,
+};
+
 function resetManagedExecutionState(): void {
   managedExecution = createEmptyExecution();
 }
@@ -362,6 +377,10 @@ function getContentType(filePath: string): string {
 
   if (filePath.endsWith(".js")) {
     return "application/javascript; charset=utf-8";
+  }
+
+  if (filePath.endsWith(".png")) {
+    return "image/png";
   }
 
   return "text/html; charset=utf-8";
@@ -973,6 +992,14 @@ function snapshotManagedExecution(execution: ManagedExecution = managedExecution
   };
 }
 
+function snapshotControllerConnection(): Record<string, unknown> {
+  return {
+    open: controllerConnection.open,
+    portPath: controllerConnection.portPath,
+    baudRate: controllerConnection.baudRate,
+  };
+}
+
 async function updateRecoverySessionProgress(
   execution: ManagedExecution,
   completedCommands: number,
@@ -1556,6 +1583,137 @@ async function handleFirmwareFlash(
   }
 }
 
+async function handleControllerOpen(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const body = (await readJsonBody(request)) as {
+    portPath?: string;
+    baudRate?: number;
+  };
+
+  try {
+    if (!body.portPath) {
+      throw new Error("Missing portPath.");
+    }
+
+    const portPath = preferSerialPath(body.portPath);
+    const baudRate = body.baudRate ?? 115200;
+
+    if (controllerConnection.open && controllerConnection.portPath !== portPath) {
+      await controllerConnection.sender?.close();
+      controllerConnection = {
+        sender: null,
+        portPath: null,
+        baudRate: null,
+        open: false,
+      };
+    }
+
+    if (!controllerConnection.open) {
+      const sender = new SerialPersistentSender();
+      await sender.open({ path: portPath, baudRate });
+      controllerConnection = {
+        sender,
+        portPath,
+        baudRate,
+        open: true,
+      };
+    }
+
+    json(response, 200, {
+      success: true,
+      connection: snapshotControllerConnection(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    json(response, 400, { error: message, session: serialSessionManager.snapshot() });
+  }
+}
+
+async function handleControllerClose(response: ServerResponse): Promise<void> {
+  try {
+    if (controllerConnection.open && controllerConnection.sender) {
+      await controllerConnection.sender.close();
+    }
+
+    controllerConnection = {
+      sender: null,
+      portPath: null,
+      baudRate: null,
+      open: false,
+    };
+
+    json(response, 200, {
+      success: true,
+      connection: snapshotControllerConnection(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    json(response, 400, { error: message, session: serialSessionManager.snapshot() });
+  }
+}
+
+async function handleControllerSend(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const body = (await readJsonBody(request)) as {
+    commands?: string[];
+    ackTimeoutMs?: number;
+    retries?: number;
+    startLine?: number;
+    endLine?: number;
+  };
+
+  try {
+    if (!Array.isArray(body.commands) || body.commands.length === 0) {
+      throw new Error("Missing commands.");
+    }
+
+    if (!controllerConnection.open || !controllerConnection.sender || !controllerConnection.portPath) {
+      throw new Error("Controller connection is not open.");
+    }
+
+    const ackTimeoutMs = body.ackTimeoutMs ?? 5_000;
+    const retries = body.retries ?? 1;
+    const lines: string[] = [`INFO target=serial commands=${body.commands.length}`];
+    const startLine = Number.isInteger(body.startLine) ? body.startLine : undefined;
+    const endLine = Number.isInteger(body.endLine) ? body.endLine : undefined;
+
+    if (startLine !== undefined) {
+      lines.push(`INFO startLine=${startLine}`);
+    }
+
+    if (endLine !== undefined) {
+      lines.push(`INFO endLine=${endLine}`);
+    }
+
+    await controllerConnection.sender.send(body.commands, {
+      ackTimeoutMs,
+      retries,
+      onDeviceLine: (line) => {
+        lines.push(line);
+      },
+    });
+
+    lines.push("INFO completed");
+
+    json(response, 200, {
+      success: true,
+      target: "serial",
+      totalCommands: body.commands.length,
+      startLine,
+      endLine,
+      lines,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    json(response, 400, { error: message, session: serialSessionManager.snapshot() });
+  }
+}
+
+async function handleControllerStatus(response: ServerResponse): Promise<void> {
+  json(response, 200, {
+    success: true,
+    connection: snapshotControllerConnection(),
+  });
+}
+
 function handleFirmwareFlashStatus(response: ServerResponse): void {
   json(response, 200, {
     success: true,
@@ -1975,6 +2133,36 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/simulator") {
+      await serveStatic(response, "simulator.html");
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/simulator.js") {
+      await serveStatic(response, "simulator.js");
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/simulator.css") {
+      await serveStatic(response, "simulator.css");
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/connect") {
+      await serveStatic(response, "simulator.html");
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/connect.js") {
+      await serveStatic(response, "simulator.js");
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/pro-controller.png") {
+      await serveStatic(response, "pro-controller.png");
+      return;
+    }
+    
     if (
       (request.method === "GET" || request.method === "HEAD") &&
       url.pathname !== "/" &&
@@ -2067,6 +2255,26 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/controller/open") {
+      await handleControllerOpen(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/controller/close") {
+      await handleControllerClose(response);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/controller/send") {
+      await handleControllerSend(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/controller/status") {
+      await handleControllerStatus(response);
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/execution/start") {
       await handleExecutionStart(request, response);
       return;
@@ -2120,6 +2328,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     json(response, 404, { error: "Not found." });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+
+    if (response.headersSent || response.writableEnded) {
+      console.error("Request handling failed after response was sent:", message);
+      return;
+    }
+
     json(response, 500, { error: message });
   }
 }

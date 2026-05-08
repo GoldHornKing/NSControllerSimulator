@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Controller Simulator | Friend Maker</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/simulator.css" />
+  </head>
+  <body>
+    <div class="connect-shell">
+      <header class="connect-header">
+        <h1>Controller Simulator</h1>
+      </header>
+
+      <div class="connect-layout">
+        <!-- Left: Connection controls + logs -->
+        <div class="left-stack">
+          <section class="panel">
+            <div class="panel-head compact">
+              <h2>Connection Controls</h2>
+            </div>
+
+            <label style="margin-top: 14px;">
+              <span>Serial Port</span>
+              <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center;">
+                <select id="ct-port" style="margin: 0;">
+                  <option value="">Loading serial ports...</option>
+                </select>
+                <button id="ct-refresh-ports" class="ghost" type="button" style="white-space: nowrap;">Refresh</button>
+              </div>
+            </label>
+
+            <div class="action-row" style="margin-top: 14px; flex-wrap: wrap;">
+              <button id="ct-open" class="primary" style="flex: 1;">Open Connection</button>
+              <button id="ct-close" class="ghost" style="flex: 1;" disabled>Close Connection</button>
+            </div>
+
+            <div class="action-row slim" style="flex-wrap: wrap;">
+              <button id="ct-info" class="ghost" style="flex: 1;">Read Controller Status</button>
+              <button id="ct-reset" class="ghost" style="flex: 1;">Reset Bluetooth Stack</button>
+            </div>
+
+            <!-- Connection indicator -->
+            <div id="ct-connection-indicator" style="
+              margin-top: 14px;
+              padding: 10px 14px;
+              border-radius: 14px;
+              background: rgba(19, 34, 56, 0.05);
+              font-size: 13px;
+              color: var(--ink-soft);
+            ">
+              <span id="ct-conn-dot" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #aaa; margin-right: 8px; vertical-align: middle;"></span>
+              <span id="ct-conn-label">Session Closed</span>
+            </div>
+          </section>
+
+          <!-- Collapsible connection status section -->
+          <details class="status-details" id="ct-status-details">
+            <summary>Controller Status</summary>
+            <div class="status-details-body">
+              <div class="ct-status-card-inner">
+                <div id="ct-status-card" class="firmware-status-card firmware-status-idle" style="border: none; background: transparent; box-shadow: none; padding: 0; margin: 0;">
+                  <span id="ct-status-pill" class="status-pill">Idle</span>
+                  <strong id="ct-status-title" class="status-title">Waiting for Controller Session</strong>
+                  <p id="ct-status-detail" class="status-detail">
+                    This section shows discoverability, authentication, connection, and report readiness for simulator operations.
+                  </p>
+
+                  <div class="controller-health-grid">
+                    <div class="controller-health-item">
+                      <span>Discoverable</span>
+                      <strong id="ct-health-discoverable">Unknown</strong>
+                    </div>
+                    <div class="controller-health-item">
+                      <span>Authenticated</span>
+                      <strong id="ct-health-auth">Unknown</strong>
+                    </div>
+                    <div class="controller-health-item">
+                      <span>Connected</span>
+                      <strong id="ct-health-connected">Unknown</strong>
+                    </div>
+                    <div class="controller-health-item">
+                      <span>Paired</span>
+                      <strong id="ct-health-paired">Unknown</strong>
+                    </div>
+                    <div class="controller-health-item">
+                      <span>Report Ready</span>
+                      <strong id="ct-health-ready">Unknown</strong>
+                    </div>
+                  </div>
+
+                  <dl class="firmware-meta-list" style="margin-top: 14px;">
+                    <div class="firmware-meta-row">
+                      <dt>Transport</dt>
+                      <dd id="ct-status-transport">-</dd>
+                    </div>
+                    <div class="firmware-meta-row">
+                      <dt>Profile</dt>
+                      <dd id="ct-status-profile">-</dd>
+                    </div>
+                    <div class="firmware-meta-row">
+                      <dt>Last Host</dt>
+                      <dd id="ct-status-peer">-</dd>
+                    </div>
+                    <div class="firmware-meta-row">
+                      <dt>Init Step</dt>
+                      <dd id="ct-status-init-step">-</dd>
+                    </div>
+                    <div class="firmware-meta-row">
+                      <dt>Init Result</dt>
+                      <dd id="ct-status-init-error">-</dd>
+                    </div>
+                    <div class="firmware-meta-row">
+                      <dt>Last Updated</dt>
+                      <dd id="ct-status-time">-</dd>
+                    </div>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <section class="panel">
+            <div class="panel-head compact" style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+              <h2>Simulator Logs</h2>
+              <button id="ct-clear-log" class="ghost" type="button">Clear Logs</button>
+            </div>
+
+            <pre id="ct-log" class="log-output" style="overflow: auto; margin-top: 12px;">Simulator ready...</pre>
+          </section>
+        </div>
+
+        <!-- Right: Controller image with overlay buttons + combo commands -->
+        <div class="right-stack">
+          <section class="panel controller-canvas">
+            <div class="panel-head compact">
+              <h2>Action Simulator</h2>
+              <p>Click any control to simulate a single Switch controller action. Use the left panel to maintain session and monitor logs.</p>
+            </div>
+
+            <div class="controller-image-wrap">
+              <div class="controller-image-bg" aria-hidden="true"></div>
+              <img src="/pro-controller.png" alt="Nintendo Switch Pro Controller" />
+
+              <!-- Shoulder buttons (top) -->
+              <button class="ctrl-btn ctrl-btn-shoulder" style="left:15%;top:13%;" data-ctrl="BTN ZL" title="ZL">ZL</button>
+              <button class="ctrl-btn ctrl-btn-shoulder" style="left:25%;top:9%;" data-ctrl="BTN L" title="L">L</button>
+              <button class="ctrl-btn ctrl-btn-shoulder" style="left:75%;top:9%;" data-ctrl="BTN R" title="R">R</button>
+              <button class="ctrl-btn ctrl-btn-shoulder" style="left:84%;top:13%;" data-ctrl="BTN ZR" title="ZR">ZR</button>
+
+              <!-- Left stick (press) -->
+              <button class="ctrl-btn ctrl-btn-left" style="left:23.75%;top:32.5%;" data-ctrl="BTN LS" title="Left Stick Press">LS</button>
+
+              <!-- D-pad -->
+              <button class="ctrl-btn ctrl-btn-left" style="left:35%;top:43%;" data-ctrl="BTN DUP" title="D-pad Up">↑</button>
+              <button class="ctrl-btn ctrl-btn-left" style="left:30%;top:50%;" data-ctrl="BTN DLEFT" title="D-pad Left">←</button>
+              <button class="ctrl-btn ctrl-btn-left" style="left:40%;top:50%;" data-ctrl="BTN DRIGHT" title="D-pad Right">→</button>
+              <button class="ctrl-btn ctrl-btn-left" style="left:35%;top:56%;" data-ctrl="BTN DDOWN" title="D-pad Down">↓</button>
+              <!-- Minus / Capture / Home / Plus (center area) -->
+              <button class="ctrl-btn ctrl-btn-center" style="left:38%;top:23%;" data-ctrl="BTN MINUS" title="Minus">−</button>
+              <button class="ctrl-btn ctrl-btn-center" style="left:43%;top:32.5%;" data-ctrl="BTN CAPTURE" title="Capture">⊡</button>
+              <button class="ctrl-btn ctrl-btn-center" style="left:56%;top:32.5%;" data-ctrl="BTN HOME" title="Home">⌂</button>
+              <button class="ctrl-btn ctrl-btn-center" style="left:61%;top:23%;" data-ctrl="BTN PLUS" title="Plus">+</button>
+
+              <!-- Right stick (press) -->
+              <button class="ctrl-btn ctrl-btn-right" style="left:61.75%;top:49.5%;" data-ctrl="BTN RS" title="Right Stick Press">RS</button>
+
+              <!-- Face buttons (ABXY) -->
+              <button class="ctrl-btn ctrl-btn-face-x" style="left:74%;top:24%;" data-ctrl="BTN X" title="X">X</button>
+              <button class="ctrl-btn ctrl-btn-face-y" style="left:66.5%;top:32.5%;" data-ctrl="BTN Y" title="Y">Y</button>
+              <button class="ctrl-btn ctrl-btn-face-a" style="left:81.5%;top:32.5%;" data-ctrl="BTN A" title="A">A</button>
+              <button class="ctrl-btn ctrl-btn-face-b" style="left:74%;top:41%;" data-ctrl="BTN B" title="B">B</button>
+            </div>
+
+            <!-- L+R pairing below the image -->
+            <div class="action-row" style="margin-top: 16px;">
+              <button id="ct-pair-lr" class="primary" style="flex: 1;">L+R Pairing</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head compact" style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+              <h2>Command Chain</h2>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <button id="ct-split-by-color" class="ghost" type="button">Split by Color</button>
+                <button id="ct-clear-combo" class="ghost" type="button">Clear</button>
+              </div>
+            </div>
+
+            <div class="combo-editor">
+              <pre id="ct-combo-line-numbers" aria-hidden="true">1</pre>
+              <textarea
+                id="ct-combo-commands"
+                class="code-block"
+                spellcheck="false"
+                placeholder="Paste command chain here, one command per line"
+              ></textarea>
+            </div>
+
+            <p class="hint" style="margin-top: 8px;">Run a command chain with persistent connection. Supports sequences of hundreds of thousands of commands.</p>
+
+            <div class="action-row slim" style="margin-top: 10px; flex-wrap: wrap;">
+              <button id="ct-execute-combo" class="primary" style="flex: 1;">Execute</button>
+              <button id="ct-next-color" class="ghost" style="flex: 1;" disabled>Next Color</button>
+              <button id="ct-terminate-combo" class="ghost" style="flex: 1;" disabled>Terminate</button>
+            </div>
+
+            <p id="ct-run-mode-hint" class="combo-run-mode-hint mode-muted" style="margin-top: 10px;">
+              Run Mode: Select a serial port to determine Dry Run vs Real Run.
+            </p>
+          </section>
+        </div>
+      </div>
+
+    </div>
+
+    <dialog id="ct-color-split-dialog" class="split-dialog">
+      <form method="dialog" class="split-dialog-shell">
+        <header class="split-dialog-head">
+          <h2>Color Sub-Chain Splitter</h2>
+          <button id="ct-color-split-close" class="ghost" type="submit">Close</button>
+        </header>
+
+        <p id="ct-color-split-summary" class="hint" style="margin: 0;">
+          Analyze the current command chain and pick a color segment.
+        </p>
+
+        <div class="split-dialog-grid">
+          <section class="split-dialog-panel">
+            <h3>Segments</h3>
+            <select id="ct-color-split-select" size="10" aria-label="Color split segments"></select>
+            <label class="split-dialog-option">
+              <input id="ct-color-split-include-setup" type="checkbox" />
+              <span>Prepend setup block when loading a color segment</span>
+            </label>
+          </section>
+
+          <section class="split-dialog-panel">
+            <h3>Preview</h3>
+            <textarea id="ct-color-split-preview" class="code-block" readonly></textarea>
+          </section>
+        </div>
+
+        <div class="split-dialog-actions">
+          <button id="ct-color-split-load" class="primary" type="button">Load Selected into Command Chain</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/simulator.js"></script>
+  </body>
+</html>
