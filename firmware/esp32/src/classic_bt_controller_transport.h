@@ -62,7 +62,6 @@ class ClassicBtControllerTransport : public ControllerTransport {
   bool pairingComplete_ = false;
   bool paired_ = false;
   uint8_t timer_ = 0;
-  int sendFailureCount_ = 0;
   const char *initStep_ = "idle";
   const char *initError_ = "none";
   uint8_t buttonsRight_ = 0;
@@ -97,4 +96,10 @@ class ClassicBtControllerTransport : public ControllerTransport {
   uint8_t consecutiveSendReportFailures_ = 0;
   uint32_t sendReportFailureCount_ = 0;
   const char *lastDropReason_ = "none";
+  // Millis of the last SEND_REPORT_EVT that came back with success.
+  // Used to detect ACL TX credit stalls after sniff-mode collisions.
+  uint32_t lastSuccessfulSendMs_ = 0;
+  // Millis of the last MODE_CHG_EVT. Stall detection is suppressed for
+  // 2000 ms after a mode change to avoid false positives during sniff recovery.
+  volatile uint32_t lastModeChangeMs_ = 0;
 };
