@@ -838,6 +838,8 @@
     if (data.lines) {
       updateStatusFromLines(data.lines);
     }
+
+    return data;
   }
 
   async function executeComboCommands() {
@@ -881,10 +883,21 @@
       throwIfTerminateRequested();
 
       appendLog("Querying status (I)...");
-      await sendCommandsInCombo(["I"], { ackTimeoutMs: 10000, retries: 1 });
+      const statusPayload = await sendCommandsInCombo(["I"], { ackTimeoutMs: 10000, retries: 1 });
       throwIfTerminateRequested();
 
-      appendLog("Session check passed (host-device only). Starting combo commands.");
+      const statusInfo = readInfoLineMap(statusPayload?.lines);
+      const readyForReports = boolFromInfo(statusInfo.bt_ready_for_reports) === true;
+
+      if (!readyForReports) {
+        appendLog(
+          "[Warn] Combo requires an active Bluetooth report channel. Current session is host-device only."
+        );
+        appendLog("[Hint] Keep Switch on Controllers > Change Grip/Order and complete L+R pairing first.");
+        return;
+      }
+
+      appendLog("Session check passed (controller ready). Starting combo commands.");
 
       const commandBatches = buildComboBatches(commands);
 
