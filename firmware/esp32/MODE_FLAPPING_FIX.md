@@ -16,15 +16,17 @@
 
 **Fix**: Gate send task on `paired_`. Remove `sendCurrentInputReport` from `OPEN_EVT`.
 
-### 2. Wrong MAC in subcmd 0x02 reply (FIXED)
+### 2. Wrong MAC in subcmd 0x02 reply (REVERTED - Root cause of repeated pairing)
 
 **Symptom**: Switch Lite closes HID after `reply02` even with correct timing.
 
-**Cause**: `kReply02` bytes 18–23 hardcoded to wrong MAC. Switch Lite validates against advertising MAC.
+**Root Cause Identified**: Dynamic MAC filling in device info reply causes Switch Lite to reject pairing. The Switch Lite validates the MAC in the reply against expected values, and the dynamic MAC doesn't match what it expects.
 
-**Fix**: Fill bytes 18–23 at reply time from `esp_bt_dev_get_address()`.
+**Fix**: Reverted to hardcoded MAC matching main branch (`D4:F0:57:6E:F0:D7`). Removed dynamic MAC filling code.
 
-**Side effect**: Switch now shows the standard "pair succeeded, press L+R" dialog on first pairing. This is correct — the pairing was silently failing before. Send `LR` to confirm.
+**Also Reverted**: Base MAC derivation back to main branch behavior (derived from factory MAC with Nintendo OUI).
+
+**Status**: Should eliminate repeated "paired successfully" notifications.
 
 ### 3. SEND_REPORT_EVT flood blocking serial output (FIXED)
 
@@ -65,11 +67,20 @@ After this collision the ESP32 BT controller stops sending `num_completed_pkts` 
 
 **Fix**: On ACL connect complete, attempt HID connect from device side to properly establish channels.
 
-### 6. Mode 0/2 flapping (FIXED)
+### 7. Handshake timeout desync from Sniff mode collision (PARTIALLY FIXED)
 
-**Cause**: Normal Bluedroid PM behavior trying to enter sniff mode.
+**Symptom**: "Paired successfully" notification repeats 3-4 times before stable connection.
 
-**Fix**: BT modem sleep disabled prevents sniff mode negotiation entirely.
+**Cause**: Switch Lite initiates Sniff mode during final handshake (reply3001/reply3333), causing LMP timeouts when data packets collide with mode-change requests.
+
+**Fix Attempted**: Fast startup heartbeat (5ms intervals) made issues worse - caused L2CAP errors and more mode flapping.
+
+**Current Approach**: 
+- Start send task immediately after HID open (no 500ms delay)
+- Send reports unconditionally to keep link active
+- BT modem sleep disabled prevents ESP32 from accepting sniff requests
+
+**Status**: Reduced mode flapping, but Switch still attempts sniff mode. May need firmware-level sniff rejection.
 
 ## Changes Applied (Cumulative, Current State)
 
@@ -79,7 +90,7 @@ After this collision the ESP32 BT controller stops sending `num_completed_pkts` 
 | `classic_bt_controller_transport.cpp` | Idle heartbeat reduced from 15ms to 8ms |
 | `classic_bt_controller_transport.cpp` | Send task gated on `paired_` |
 | `classic_bt_controller_transport.cpp` | Removed `sendCurrentInputReport(false)` from `OPEN_EVT` |
-| `classic_bt_controller_transport.cpp` | `kReply02` MAC bytes filled dynamically from `esp_bt_dev_get_address()` |
+| `classic_bt_controller_transport.cpp` | Reverted MAC handling to match main branch (hardcoded reply MAC, derived base MAC) |
 | `classic_bt_controller_transport.cpp` | Removed `esp_bt_gap_set_qos` from `OPEN_EVT` (caused LMP collision) |
 | `classic_bt_controller_transport.cpp` | `esp_bt_sleep_disable()` at Bluedroid init |
 | `classic_bt_controller_transport.cpp` | `SEND_REPORT_EVT` congestion noise suppressed (reason=8/0) |
@@ -90,7 +101,10 @@ After this collision the ESP32 BT controller stops sending `num_completed_pkts` 
 | `classic_bt_controller_transport.cpp` | ACL stall detection disabled (was causing premature disconnects) |
 | `classic_bt_controller_transport.cpp` | Factory MAC used instead of derived |
 | `classic_bt_controller_transport.cpp` | Increased congestion retry budget to 300ms |
-| `classic_bt_controller_transport.h` | `lastSuccessfulSendMs_`, `pendingReconnectAfterMs_` fields added |
+| `classic_bt_controller_transport.cpp` | Send task uses 100ms intervals instead of 15ms to reduce LMP collision risk |
+| `classic_bt_controller_transport.cpp` | Removed 10ms delay after subcmd 0x03 reply |
+| `classic_bt_controller_transport.cpp` | Removed fast startup heartbeat (made issues worse) |
+| `classic_bt_controller_transport.h` | Removed `hidConnectionEstablishedMs_` field |
 | `controller.h` / `controller.cpp` | `isPaused()` added |
 | `protocol.cpp` | Paused-state fail-fast guard added |
 | `main.cpp` | Raw command + `OK dry-run no-bt` mode |
@@ -99,18 +113,18 @@ After this collision the ESP32 BT controller stops sending `num_completed_pkts` 
 
 ```
 INFO bt hid event=open status=0 conn=0 peer=...
-(delay 500ms for channel stabilization)
+(send task starts immediately)
 INFO bt intr report=1 len=48 subcmd=2 ...        ← device info
-INFO bt reply label=reply02 ...
+INFO bt reply label=reply02 ...                  ← hardcoded MAC D4:F0:57:6E:F0:D7
 INFO bt intr report=1 len=48 subcmd=8 ...
 ... (SPI reads) ...
 INFO bt intr report=1 len=48 subcmd=3 ...        ← set input report mode
 INFO bt intr report=1 len=48 subcmd=48 ...       ← set player lights → paired_=true
-                                                  ← idle send task starts (8ms intervals)
+                                                  ← idle send task continues (100ms intervals)
 ECHO raw command="A"
 INFO action=button name=A
 OK
-(no mode changes or disconnections)
+(matching main branch behavior - no repeated pairing)
 ```
 ... (sniff collision fires ~800 ms later) ...
 INFO bt acl-stall detected, disconnecting hid
