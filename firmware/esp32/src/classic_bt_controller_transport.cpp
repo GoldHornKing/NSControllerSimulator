@@ -31,11 +31,12 @@ constexpr uint8_t kStickMax = 255;
 constexpr uint8_t kHidErrCongested = 8;
 constexpr uint16_t kHidCongestionRetryDelayMs = HID_REPEAT_INTERVAL_MS;
 // 300 ms gives the L2CAP TX queue time to drain before giving up on a button press.
+// Extended from 120ms (HID_REPEAT_INTERVAL_MS * 4) for Switch Lite compatibility.
 constexpr uint16_t kHidCongestionRetryBudgetMs = 300;
 constexpr uint16_t kIdleDisconnectedReportIntervalMs = 100;
 constexpr uint16_t kIdlePrePairingReportIntervalMs = 30;
 constexpr uint16_t kIdleCongestedReportIntervalMs = 45;
-constexpr uint16_t kIdleConnectedReportIntervalMs = 100;
+constexpr uint16_t kIdleConnectedReportIntervalMs = 15;
 
 uint8_t kHidDescriptor[] = {
     0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x06, 0x01, 0xff, 0x85, 0x21, 0x09,
@@ -341,9 +342,11 @@ bool ClassicBtControllerTransport::initializeClassicBluetooth() {
   }
   bluedroidReady_ = true;
 
-  // Disable BT modem sleep (RF clock stays on). This tightens sniff LMP
-  // timing and reduces the collision window where two simultaneous sniff
-  // requests (Switch PM + BTA_DM_PM) leave the ACL TX credit counter stalled.
+  // Disable BT modem sleep at runtime (overrides config settings). This prevents
+  // the ESP32 from entering sniff mode, which conflicts with Switch Lite's power
+  // management and causes LMP collisions during pairing/handshake. The Switch Lite
+  // has stricter timing requirements and attempts sniff mode transitions that
+  // interfere with stable connections.
   esp_bt_sleep_disable();
 
   initStep_ = "gap_register";
@@ -611,21 +614,21 @@ void ClassicBtControllerTransport::ensureSendTask() {
       0);
 }
 
+// Switch Lite branch: idleSendIntervalMs() is not used, but kept for reference.
 uint16_t ClassicBtControllerTransport::idleSendIntervalMs() const {
-// If we are connected to the Switch but the handshake (pairing) isn't 
-  // finished, we MUST send reports every 11ms. 
-  // This "noise" stops the Switch Lite from trying to enter Sniff Mode.
-  if (connected_ && !paired_) {
-    return kIdleConnectedReportIntervalMs; 
-  }
-
-  // If not connected at all, talk slowly to save local CPU
-  if (!connected_) {
+  if (!connected_ && !paired_) {
     return kIdleDisconnectedReportIntervalMs;
   }
 
-  // Standard behavior for when things are going well
-  return kIdleConnectedReportIntervalMs; // Ensure this is also set to 11 at the top of your file
+  if (reportCongested_ || consecutiveSendReportFailures_ >= 3) {
+    return kIdleCongestedReportIntervalMs;
+  }
+
+  if (!paired_ || !authComplete_) {
+    return kIdlePrePairingReportIntervalMs;
+  }
+
+  return kIdleConnectedReportIntervalMs;
 }
 
 void ClassicBtControllerTransport::sendTaskTrampoline(void *param) {
@@ -633,9 +636,13 @@ void ClassicBtControllerTransport::sendTaskTrampoline(void *param) {
   // Increase delay to 1000ms to let Switch Lite encryption finish
   vTaskDelay(pdMS_TO_TICKS(1000));
   while (true) {
-    transport->sendCurrentInputReport(false);
-    // Force 100ms if connected to prevent the buggy Sniff Mode
-    vTaskDelay(pdMS_TO_TICKS(transport->connected_ ? 100 : 100));
+    if (!transport->explicitInputActive_) {
+      transport->sendCurrentInputReport(false);
+    }
+    // Main branch logic (dynamic interval, commented for reference)
+    //vTaskDelay(pdMS_TO_TICKS(transport->idleSendIntervalMs()));
+    // Switch Lite compatibility: always use 100ms interval, no dynamic timing
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
@@ -706,7 +713,6 @@ void ClassicBtControllerTransport::enterReconnectableState(const char *reason) {
   discoverable_ = true;
   reportCongested_ = false;
   consecutiveSendReportFailures_ = 0;
-  lastSuccessfulSendMs_ = 0; // reset stall timer so it doesn't retrigger
   lastDropReason_ = reason;
   clearInputs();
 
@@ -922,10 +928,6 @@ bool ClassicBtControllerTransport::beginExplicitInput() {
     return true;
   }
 
-  if (inputReportSendMutex_ == nullptr) {
-    return true;
-  }
-
   xSemaphoreTakeRecursive(inputReportSendMutex_, portMAX_DELAY);
 
   // Wait for in-flight idle-send BTA callbacks to drain BEFORE resetting the
@@ -967,12 +969,6 @@ bool ClassicBtControllerTransport::repeatCurrentInputReport(
   bool loggedCongestionRetry = false;
 
   while (true) {
-    // Fire-and-forget (waitForSendEvent=false): esp_bt_hid_device_send_report
-    // returns ESP_OK when L2CAP accepts the packet into xmit_hold_q even when
-    // the channel is congested (L2CAP_DW_CONGESTED). The packet IS queued and
-    // WILL be delivered as the ACL link drains. Waiting for the EVT and
-    // treating reason=8 as failure causes spurious retries that fill the queue
-    // further and block the main loop for hundreds of ms.
     if (!sendCurrentInputReport(logFailure, false)) {
       if (shouldRetryAfterTransientSendFailure()) {
         if (congestionStartedAt == 0) {
@@ -1108,7 +1104,6 @@ void ClassicBtControllerTransport::processIncomingReport(uint8_t reportId, uint1
       data[11]);
 
   if (data[9] == 2) {
-    // Subcmd 0x02: Request Device Info.
     sendSubcommandReply(0x21, kReply02, sizeof(kReply02), "reply02");
     return;
   }
@@ -1125,7 +1120,6 @@ void ClassicBtControllerTransport::processIncomingReport(uint8_t reportId, uint1
     return;
   }
   if (data[9] == 3) {
-    // Explicitly acknowledge the transition to Report Mode 0x30
     sendSubcommandReply(0x21, kReply03, sizeof(kReply03), "reply03");
     markControllerPaired(); // Ensure the send task knows we are live
     return;
@@ -1197,21 +1191,11 @@ void ClassicBtControllerTransport::handleGapEvent(int event, void *rawParam) {
         // incoming CTRL connection and trigger invalid-state rejects.
       }
       break;
-    case ESP_BT_GAP_QOS_CMPL_EVT:
-      Serial.printf(
-          "INFO bt qos-complete status=%d t_poll=%lu\n",
-          param->qos_cmpl.stat,
-          static_cast<unsigned long>(param->qos_cmpl.t_poll));
-      break;
     case ESP_BT_GAP_MODE_CHG_EVT:
-      lastModeChangeMs_ = millis();
       Serial.printf("INFO bt mode-change mode=%u\n", param->mode_chg.mode);
       break;
     case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
       Serial.printf("INFO bt acl-connect status=%u\n", param->acl_conn_cmpl_stat.stat);
-      if (param->acl_conn_cmpl_stat.stat == 0 && hasPeerAddress_ && !connected_) {
-        attemptVirtualCablePlug(lastPeerAddress_, "acl-connect");
-      }
       break;
     case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
       Serial.printf("INFO bt acl-disconnect reason=%u\n", param->acl_disconn_cmpl_stat.reason);
@@ -1287,13 +1271,7 @@ void ClassicBtControllerTransport::handleHidEvent(int event, void *rawParam) {
         std::memcpy(lastPeerAddress_, param->open.bd_addr, sizeof(lastPeerAddress_));
         hasPeerAddress_ = true;
         esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
-        // QoS settings not available in ESP-IDF 4.4.7
-        // Start send task immediately to keep link active and prevent Sniff mode
         ensureSendTask();
-        // Do not send any reports here. The Switch drives the subcmd handshake
-        // (0x02 device info, 0x08, SPI reads, 0x30 player lights). Sending
-        // unsolicited 0x30 reports before the handshake confuses Switch Lite,
-        // which closes HID immediately. The send task starts after paired_ = true.
         sendCurrentInputReport(false);
       }
       Serial.printf(
@@ -1302,7 +1280,7 @@ void ClassicBtControllerTransport::handleHidEvent(int event, void *rawParam) {
           param->open.conn_status,
           connected_ ? formatBluetoothAddress(lastPeerAddress_).c_str() : "unknown");
       break;
-    case ESP_HIDD_CLOSE_EVT: {
+    case ESP_HIDD_CLOSE_EVT:
       lastHidCloseStatus_ = param->close.status;
       lastHidCloseConnStatus_ = param->close.conn_status;
       enterReconnectableState("hid-close");
@@ -1311,7 +1289,6 @@ void ClassicBtControllerTransport::handleHidEvent(int event, void *rawParam) {
           param->close.status,
           param->close.conn_status);
       break;
-    }
     case ESP_HIDD_SEND_REPORT_EVT:
       if (param->send_report.status != ESP_HIDD_SUCCESS) {
         sendReportFailureCount_ += 1;
@@ -1320,7 +1297,6 @@ void ClassicBtControllerTransport::handleHidEvent(int event, void *rawParam) {
         }
       } else {
         consecutiveSendReportFailures_ = 0;
-        lastSuccessfulSendMs_ = millis();
       }
       lastSendReportStatus_ = param->send_report.status;
       lastSendReportReason_ = param->send_report.reason;
