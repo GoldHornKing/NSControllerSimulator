@@ -4,13 +4,14 @@ import path from "node:path";
 
 import {
   createFirmwareManifest,
+  getFirmwareVariant,
+  listFirmwareVariants,
   readFirmwareFlashPlan,
   siteRoot,
 } from "./firmware-site.mjs";
 
 const webBuildRoot = path.join(siteRoot, "dist", "web");
 const pagesRoot = path.join(siteRoot, "dist", "pages");
-const firmwareOutputRoot = path.join(pagesRoot, "firmware", "esp32dev_wireless");
 
 async function assertFileExists(filePath) {
   if (!existsSync(filePath)) {
@@ -25,26 +26,44 @@ async function assertFileExists(filePath) {
 
 async function main() {
   await assertFileExists(path.join(webBuildRoot, "index.html"));
-  const firmwareParts = await readFirmwareFlashPlan();
+  const firmwareVariants = listFirmwareVariants();
+  const firmwarePlanByModel = new Map();
 
-  for (const part of firmwareParts) {
-    await assertFileExists(part.sourcePath);
+  for (const variant of firmwareVariants) {
+    const firmwareParts = await readFirmwareFlashPlan(variant.switchModelId);
+    for (const part of firmwareParts) {
+      await assertFileExists(part.sourcePath);
+    }
+    firmwarePlanByModel.set(variant.switchModelId, firmwareParts);
   }
 
   await rm(pagesRoot, { recursive: true, force: true });
-  await mkdir(firmwareOutputRoot, { recursive: true });
   await cp(webBuildRoot, pagesRoot, { recursive: true });
 
-  for (const part of firmwareParts) {
-    await cp(part.sourcePath, path.join(firmwareOutputRoot, part.publishFileName));
+  for (const variant of firmwareVariants) {
+    const firmwareOutputRoot = path.join(pagesRoot, "firmware", variant.environmentId);
+    await mkdir(firmwareOutputRoot, { recursive: true });
+
+    for (const part of firmwarePlanByModel.get(variant.switchModelId) ?? []) {
+      await cp(part.sourcePath, path.join(firmwareOutputRoot, part.publishFileName));
+    }
   }
 
-  const manifest = await createFirmwareManifest();
-  await writeFile(
-    path.join(pagesRoot, "firmware", "manifest.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    "utf8",
-  );
+  for (const variant of firmwareVariants) {
+    const manifest = await createFirmwareManifest(variant.switchModelId);
+    await writeFile(
+      path.join(pagesRoot, "firmware", variant.manifestFileName),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      "utf8",
+    );
+  }
+
+  const defaultManifestVariant = getFirmwareVariant("switch");
+  if (defaultManifestVariant.manifestFileName !== "manifest.json") {
+    const manifest = await createFirmwareManifest("switch");
+    await writeFile(path.join(pagesRoot, "firmware", "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  }
+
   await writeFile(path.join(pagesRoot, ".nojekyll"), "", "utf8");
 }
 

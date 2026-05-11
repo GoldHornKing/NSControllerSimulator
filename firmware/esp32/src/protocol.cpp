@@ -20,6 +20,43 @@ bool parseTwoInts(const String &value, int &first, int &second) {
   return true;
 }
 
+bool parseLineCommand(const String &value, int &dx, int &dy, uint8_t &stride) {
+  const int firstSpace = value.indexOf(' ');
+  if (firstSpace < 0) {
+    return false;
+  }
+
+  const int secondSpace = value.indexOf(' ', firstSpace + 1);
+  if (secondSpace < 0) {
+    return false;
+  }
+
+  const int thirdSpace = value.indexOf(' ', secondSpace + 1);
+
+  if (thirdSpace < 0) {
+    dx = value.substring(firstSpace + 1, secondSpace).toInt();
+    dy = value.substring(secondSpace + 1).toInt();
+    stride = 1;
+    return true;
+  }
+
+  const int fourthSpace = value.indexOf(' ', thirdSpace + 1);
+  if (fourthSpace >= 0) {
+    return false;
+  }
+
+  dx = value.substring(firstSpace + 1, secondSpace).toInt();
+  dy = value.substring(secondSpace + 1, thirdSpace).toInt();
+  const int parsedStride = value.substring(thirdSpace + 1).toInt();
+
+  if (parsedStride <= 0 || parsedStride > 255) {
+    return false;
+  }
+
+  stride = static_cast<uint8_t>(parsedStride);
+  return true;
+}
+
 bool parseThreeInts(const String &value, int &first, int &second, int &third) {
   const int firstSpace = value.indexOf(' ');
   if (firstSpace < 0) {
@@ -394,8 +431,18 @@ bool executeCommand(const String &line, SwitchController &controller, String &er
     }
 
     Serial.printf(
-        "INFO action=bt-reset reconnect_last_peer=%s\n",
+        "INFO action=bt-reset requested_reconnect_last_peer=%s\n",
         reconnectLastPeer ? "true" : "false");
+    return true;
+  }
+
+  if (line == "BT CLEAR-PEER") {
+    if (!controller.clearBluetoothPeer()) {
+      error = "bt clear-peer failed";
+      return false;
+    }
+
+    Serial.println("INFO action=bt-clear-peer");
     return true;
   }
 
@@ -512,17 +559,18 @@ bool executeCommand(const String &line, SwitchController &controller, String &er
   if (line.startsWith("L ")) {
     int dx = 0;
     int dy = 0;
+    uint8_t stride = 1;
 
-    if (!parseTwoInts(line, dx, dy) || (dx == 0 && dy == 0) || (dx != 0 && dy != 0)) {
+    if (!parseLineCommand(line, dx, dy, stride) || (dx == 0 && dy == 0) || (dx != 0 && dy != 0)) {
       error = "invalid line";
       return false;
     }
 
-    if (!controller.drawLine(dx, dy)) {
+    if (!controller.drawLine(dx, dy, stride)) {
       return failControllerInput(error);
     }
 
-    Serial.printf("INFO action=line dx=%d dy=%d\n", dx, dy);
+    Serial.printf("INFO action=line dx=%d dy=%d stride=%u\n", dx, dy, stride);
     return true;
   }
 

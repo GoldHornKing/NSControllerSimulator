@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import { normalizeBrushShape } from "../brushBehavior.js";
 import type { DrawingProfile } from "../types.js";
 import { DEFAULT_ACK_TIMEOUT_MS, DEFAULT_PALETTE, DEFAULT_PROFILE } from "./defaultProfile.js";
 import { OFFICIAL_PALETTE } from "./officialPalette.js";
@@ -84,6 +85,7 @@ export async function loadProfile(profilePath?: string): Promise<DrawingProfile>
     monoThreshold: toNumber(parsed.monoThreshold, DEFAULT_PROFILE.monoThreshold),
     palette,
     brushSize: toBrushSize(parsed.brushSize, DEFAULT_PROFILE.brushSize),
+    brushShape: normalizeBrushShape(parsed.brushShape, DEFAULT_PROFILE.brushShape),
     startCursor: parsed.startCursor === "top-left" ? "top-left" : "center",
     startTool: toTool(parsed.startTool, DEFAULT_PROFILE.startTool),
     startColorIndex: toNonNegativeNumber(parsed.startColorIndex, DEFAULT_PROFILE.startColorIndex),

@@ -106,6 +106,7 @@ export const DEFAULT_PROFILE: DrawingProfile = {
   monoThreshold: 128,
   palette: DEFAULT_PALETTE.slice(0, 2),
   brushSize: 3,
+  brushShape: "square",
   startCursor: "center",
   startTool: "pen",
   startColorIndex: 0,

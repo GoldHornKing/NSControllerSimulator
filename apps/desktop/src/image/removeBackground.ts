@@ -70,7 +70,9 @@ function collectEdgePixels(image: RawImageData): Array<{ x: number; y: number; r
 }
 
 function detectBackgroundSwatches(image: RawImageData): RgbColor[] {
-  const edgePixels = collectEdgePixels(image).filter((pixel) => pixel.alpha > TRANSPARENCY_ALPHA_THRESHOLD);
+  const edgePixels = collectEdgePixels(image).filter(
+    (pixel) => pixel.alpha > TRANSPARENCY_ALPHA_THRESHOLD,
+  );
 
   if (edgePixels.length === 0) {
     return [];

@@ -200,7 +200,11 @@ void loop() {
   if (!parseSequencedFrame(line, frame)) {
     Serial.printf("ECHO raw command=\"%s\"\n", line.c_str());
 
-    // Backward-compatible raw mode: accept plain commands typed in serial monitor.
+    // pio device monitor is commonly used to type one-off commands by hand while
+    // debugging BT pairing/input behavior. Those manual lines are not wrapped in
+    // the SEQ protocol format used by the UI transport.
+    // Keep this raw fallback so monitor-driven bring-up and recovery checks work
+    // without requiring a host session ID/sequence generator.
     String error;
     const bool ok = executeCommand(line, controller, error);
 
@@ -210,6 +214,8 @@ void loop() {
       const bool allowNoBtDryRun = error == "controller input report failed";
 
       if (allowNoBtDryRun) {
+        // In monitor-only testing, transport can be disconnected; still report a
+        // successful command parse/execution path so command logic can be tested.
         Serial.println("OK dry-run no-bt");
       } else {
         Serial.println("ERR " + (error.length() > 0 ? error : "unknown error"));

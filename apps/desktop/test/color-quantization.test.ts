@@ -42,6 +42,7 @@ function makeProfile(overrides: Partial<DrawingProfile> = {}): DrawingProfile {
     monoThreshold: 128,
     palette: ["#000000", "#ffffff"],
     brushSize: 1,
+    brushShape: "square",
     startCursor: "center",
     startTool: "pen",
     startColorIndex: 0,

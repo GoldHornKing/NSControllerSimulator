@@ -34,6 +34,7 @@ function makeProfile(overrides: Partial<DrawingProfile> = {}): DrawingProfile {
     monoThreshold: 128,
     palette: ["#000000", "#ffffff"],
     brushSize: 1,
+    brushShape: "square",
     startCursor: "center",
     startTool: "pen",
     startColorIndex: 0,
@@ -81,6 +82,7 @@ test("scanline and recovery plans preserve profile timing in CFG INPUT", () => {
     inputDelay: 170,
     buttonPressDuration: 65,
     homeDuration: 2400,
+    brushSize: 3,
   });
   const pixelMap = makePixelMap(5, 1, [{ x: 2, y: 0 }]);
   const scanlinePlan = generateScanlinePlan(pixelMap, profile);
@@ -92,14 +94,18 @@ test("scanline and recovery plans preserve profile timing in CFG INPUT", () => {
   });
 
   assert.equal(commands[0], "CFG INPUT 65 170 2400");
+  assert.deepEqual(commands.slice(1, 8), ["BTN X", "BTN X", "M -1 1", "BTN A", "BTN A", "BTN A", "W 3000"]);
   assert.equal(scanlinePlan.resumePlan.inputConfigCommand, "CFG INPUT 65 170 2400");
   assert.equal(recoveryPlan.commands[0], "CFG INPUT 65 170 2400");
+  assert.deepEqual(recoveryPlan.commands.slice(1, 8), ["BTN X", "BTN X", "M -1 1", "BTN A", "BTN A", "BTN A", "W 3000"]);
 });
 
 test("/api/generate echoes timing overrides into commands and estimated runtime", async (t) => {
-  const server = await startWebServer({ port: 0 });
+  const recoverySessionsRoot = await mkdtemp(path.join(os.tmpdir(), "friendmaker-timing-generate-"));
+  const server = await startWebServer({ port: 0, recoverySessionsRoot });
   t.after(async () => {
     await server.close();
+    await rm(recoverySessionsRoot, { recursive: true, force: true });
   });
 
   const imageDataUrl = await solidPngDataUrl(4, 4);
@@ -151,6 +157,33 @@ test("/api/generate echoes timing overrides into commands and estimated runtime"
     overridePayload.stats.estimatedRuntimeMs < defaultPayload.stats.estimatedRuntimeMs,
     "expected faster timing overrides to reduce estimated runtime",
   );
+});
+
+test("/api/generate rejects unsupported round large-brush requests", async (t) => {
+  const recoverySessionsRoot = await mkdtemp(path.join(os.tmpdir(), "friendmaker-timing-round-"));
+  const server = await startWebServer({ port: 0, recoverySessionsRoot });
+  t.after(async () => {
+    await server.close();
+    await rm(recoverySessionsRoot, { recursive: true, force: true });
+  });
+
+  const imageDataUrl = await solidPngDataUrl(4, 4);
+  const response = await fetch(`${server.url}/api/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      imageDataUrl,
+      previewScale: 1,
+      brushSize: 3,
+      brushShape: "round",
+    }),
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.status, 400);
+  const payload = (await response.json()) as { error?: string };
+  assert.match(payload.error ?? "", /圆形/u);
+  assert.match(payload.error ?? "", /暂不支持/u);
 });
 
 test("loadProfile clamps legacy ack timeout values to the supported minimum", async (t) => {

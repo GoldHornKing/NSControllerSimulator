@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 
 import { deriveResumeProgress } from "../app/recovery.js";
-import type { BrushSize, ColorMode, ResumePlan } from "../types.js";
+import type { BrushShape, BrushSize, ColorMode, ResumePlan } from "../types.js";
 
 export type RecoverySessionStatus =
   | "running"
@@ -15,6 +15,7 @@ export type RecoverySessionStatus =
 
 export interface RecoveryProfileSummary {
   brushSize: BrushSize;
+  brushShape: BrushShape;
   colorMode: ColorMode;
   templateId: string;
   templateLabel: string;
@@ -154,12 +155,27 @@ export class RecoverySessionStore {
     return this.rootDirectory;
   }
 
+  private resolveSessionPath(jobId: string, suffix: string): string {
+    if (jobId.length === 0 || /[\\/]/u.test(jobId)) {
+      throw new Error("Invalid recovery session id.");
+    }
+
+    const rootDirectory = path.resolve(this.rootDirectory);
+    const filePath = path.resolve(rootDirectory, `${jobId}${suffix}`);
+
+    if (filePath === rootDirectory || !filePath.startsWith(`${rootDirectory}${path.sep}`)) {
+      throw new Error("Invalid recovery session id.");
+    }
+
+    return filePath;
+  }
+
   private commandsFilePath(jobId: string): string {
-    return path.join(this.rootDirectory, `${jobId}.commands.txt`);
+    return this.resolveSessionPath(jobId, ".commands.txt");
   }
 
   private resumeFilePath(jobId: string): string {
-    return path.join(this.rootDirectory, `${jobId}.resume.json`);
+    return this.resolveSessionPath(jobId, ".resume.json");
   }
 
   private async ensureRoot(): Promise<void> {

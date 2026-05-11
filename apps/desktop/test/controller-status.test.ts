@@ -74,6 +74,7 @@ test("deriveControllerStatus marks congested inferred-ready links as unstable", 
     "INFO bt_last_send_report_status=1",
     "INFO bt_last_send_report_reason=8",
     "INFO bt_last_acl_disconnect_reason=19",
+    "INFO bt_last_peer_reconnectable=true",
     "INFO bt_init_step=discoverable",
     "INFO bt_init_error=ESP_OK",
   ]);
@@ -89,6 +90,7 @@ test("deriveControllerStatus marks congested inferred-ready links as unstable", 
   assert.equal(status?.sendReportFailureCount, 7236);
   assert.equal(status?.lastSendReportReason, 8);
   assert.equal(status?.lastAclDisconnectReason, 19);
+  assert.equal(status?.peerReconnectableValue, true);
 });
 
 test("shouldReuseExistingControllerConnection keeps active bluetooth sessions intact", () => {
@@ -168,7 +170,12 @@ test("controller status updates also resync the controller action buttons", asyn
 
   assert.match(
     appSource,
-    /state\.controller\.status\.reconnectRecommendedValue === true[\s\S]*BT RESET LAST-PEER[\s\S]*自动恢复手柄连接/u,
+    /els\.controllerClearPeerButton\.addEventListener\("click", async \(\) => \{[\s\S]*runControllerCommands\(\["BT CLEAR-PEER", "BT RESET", "I"\], "清除已保存主机"\)[\s\S]*startControllerStatusPolling\(\)/u,
+  );
+
+  assert.match(
+    appSource,
+    /state\.controller\.status\.reconnectRecommendedValue === true[\s\S]*const shouldReconnectLastPeer = shouldPreferLastPeerResetOnAutoRecovery\(\);[\s\S]*\? \["BT RESET LAST-PEER", "I"\][\s\S]*: \["BT RESET", "I"\][\s\S]*自动恢复手柄连接/u,
   );
 
   assert.match(
@@ -178,11 +185,49 @@ test("controller status updates also resync the controller action buttons", asyn
 
   assert.match(
     appSource,
-    /controllerStatusTimeoutRecoveryAttempted = true[\s\S]*等待连接超过 45 秒，自动重置蓝牙并重试一次。[\s\S]*BT RESET LAST-PEER[\s\S]*自动恢复手柄连接/u,
+    /function shouldPreferLastPeerResetOnAutoRecovery\(status = state\.controller\.status\)[\s\S]*status &&[\s\S]*status\.peer !== "-"\s*&&[\s\S]*status\.peerReconnectableValue === true/u,
+  );
+
+  assert.match(
+    appSource,
+    /controllerStatusTimeoutRecoveryAttempted = true[\s\S]*const shouldReconnectLastPeer = shouldPreferLastPeerResetOnAutoRecovery\(\);[\s\S]*\? \["BT RESET LAST-PEER", "I"\][\s\S]*: \["BT RESET", "I"\][\s\S]*自动恢复手柄连接/u,
   );
 
   assert.match(
     appSource,
     /if \(payload\) \{[\s\S]*startControllerStatusPolling\(\);[\s\S]*\} else \{[\s\S]*setControllerRecoveryFailedStatus\(/u,
+  );
+
+  assert.match(
+    appSource,
+    /const shouldDisable = state\.controller\.busy \|\| state\.serialSession\.busy \|\| !hasPort;[\s\S]*els\.controllerClearPeerButton\.disabled = shouldDisable;/u,
+  );
+
+  assert.match(
+    appSource,
+    /import\s*\{\s*deriveControllerStatus,\s*normalizeControllerDeviceLines,\s*shouldReuseExistingControllerConnection,\s*\}\s*from "\.\/controllerStatus\.js";/u,
+  );
+
+  assert.match(
+    appSource,
+    /const CONTROLLER_STATUS_DIAGNOSTIC_LINE_PATTERNS = \[[\s\S]*INFO bt pin-request[\s\S]*INFO bt confirm-request[\s\S]*INFO bt hid event=\(\?:open\|close\|vc-unplug\)[\s\S]*WARN bt /u,
+  );
+
+  assert.doesNotMatch(appSource, /const CONTROLLER_STATUS_DIAGNOSTIC_LINE_PATTERNS = \[[\s\S]*INFO bt auth status=/u);
+  assert.doesNotMatch(appSource, /const CONTROLLER_STATUS_DIAGNOSTIC_LINE_PATTERNS = \[[\s\S]*INFO bt acl-connect /u);
+
+  assert.match(
+    appSource,
+    /function appendControllerStatusDiagnosticLines\(lines\) \{[\s\S]*normalizeControllerDeviceLines\(lines \?\? \[\]\)\.filter\([\s\S]*appendLog\(els\.controllerLogOutput, `\[device\] \$\{line\}`\)/u,
+  );
+
+  assert.match(
+    appSource,
+    /if \(payload\?\.lines\) \{[\s\S]*updateControllerStatusFromLines\(payload\.lines\);[\s\S]*\} else \{[\s\S]*await requestControllerStatus\(\);[\s\S]*\}/u,
+  );
+
+  assert.match(
+    appSource,
+    /updateControllerStatusFromLines\(payload\.lines \?\? \[\]\);[\s\S]*appendControllerStatusDiagnosticLines\(payload\.lines\);/u,
   );
 });

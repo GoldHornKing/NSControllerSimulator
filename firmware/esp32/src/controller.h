@@ -15,7 +15,7 @@ class SwitchController {
   bool moveCursor(int dx, int dy);
   bool moveStick(int x, int y, uint16_t holdMs);
   bool drawStroke();
-  bool drawLine(int dx, int dy);
+  bool drawLine(int dx, int dy, uint8_t stride = 1);
   bool pressButton(ControllerButton button);
   bool holdButton(ControllerButton button, uint16_t holdMs);
   bool tapButton(ControllerButton button, uint16_t count);
@@ -25,6 +25,7 @@ class SwitchController {
   bool configurePaletteSlot(int index, uint8_t red, uint8_t green, uint8_t blue);
   bool configureBasicPaletteSlot(int index, uint8_t row, uint8_t col);
   bool resetBluetooth(bool reconnectLastPeer = false);
+  bool clearBluetoothPeer();
   void pause();
   void resume();
   void end();
