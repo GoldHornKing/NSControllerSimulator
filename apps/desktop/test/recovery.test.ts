@@ -8,7 +8,7 @@ import {
   buildRecoveryExecutionPlan,
   deriveResumeProgress,
 } from "../src/app/recovery.js";
-import { generateScanlinePlan } from "../src/path/scanline.js";
+import { estimateRuntimeMs, generateScanlinePlan } from "../src/path/scanline.js";
 import { serializeCommands } from "../src/protocol/serializer.js";
 import { SimulatedAckSender } from "../src/simulator/sender.js";
 import { startWebServer } from "../src/web/server.js";
@@ -38,6 +38,7 @@ function makeProfile(overrides: Partial<DrawingProfile> = {}): DrawingProfile {
     monoThreshold: 128,
     palette: ["#000000", "#ffffff"],
     brushSize: 1,
+    brushShape: "square",
     startCursor: "center",
     startTool: "pen",
     startColorIndex: 0,
@@ -72,6 +73,7 @@ function makePixelMap(
 function makeRecoveryProfileSummary(profile: DrawingProfile) {
   return {
     brushSize: profile.brushSize,
+    brushShape: profile.brushShape,
     colorMode: profile.colorMode,
     templateId: "none",
     templateLabel: "无模板（正方形）",
@@ -79,6 +81,63 @@ function makeRecoveryProfileSummary(profile: DrawingProfile) {
     imageOffsetXPercent: 0,
     imageOffsetYPercent: 0,
   };
+}
+
+function expectedBrushSetupPrefix(
+  brushSize: DrawingProfile["brushSize"],
+  brushShape: DrawingProfile["brushShape"],
+): string[] {
+  const columnsBySize = {
+    1: 0,
+    3: 1,
+    7: 2,
+    13: 3,
+    19: 4,
+    27: 5,
+  } as const;
+  const rowsByShape = {
+    round: 0,
+    square: 1,
+  } as const;
+  const dx = columnsBySize[brushSize] - 2;
+  const dy = rowsByShape[brushShape];
+  const commands = ["BTN X", "BTN X"];
+
+  if (dx !== 0 || dy !== 0) {
+    commands.push(`M ${dx} ${dy}`);
+  }
+
+  commands.push("BTN A");
+  commands.push("BTN A");
+  commands.push("BTN A");
+  commands.push("W 3000");
+  return commands;
+}
+
+async function waitForExecutionStatus(
+  serverUrl: string,
+  expectedStatus: string,
+  timeoutMs = 2_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = "idle";
+
+  while (Date.now() <= deadline) {
+    const statusResponse = await fetch(`${serverUrl}/api/execution/status`);
+    const statusPayload = (await statusResponse.json()) as {
+      execution?: { status?: string };
+    };
+
+    lastStatus = statusPayload.execution?.status ?? lastStatus;
+
+    if (lastStatus === expectedStatus) {
+      return lastStatus;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  return lastStatus;
 }
 
 test("mono resume segments keep the first draw command when the segment already starts at center", () => {
@@ -96,11 +155,11 @@ test("mono resume segments keep the first draw command when the segment already 
 
   assert.ok(segment);
   assert.deepEqual(scanlinePlan.resumePlan.initialCursor, { x: 2, y: 0 });
-  assert.deepEqual(segment.resumePrefixCommands, ["C 1"]);
+  assert.deepEqual(segment.resumePrefixCommands, [...expectedBrushSetupPrefix(1, "square"), "C 1"]);
   assert.deepEqual(segment.firstCanvasPosition, { x: 2, y: 0 });
-  assert.equal(segment.bodyStartCommandIndex, 1);
+  assert.equal(segment.bodyStartCommandIndex, 8);
   assert.equal(commands[segment.bodyStartCommandIndex], "P");
-  assert.equal(segment.commandEndExclusive, 2);
+  assert.equal(segment.commandEndExclusive, 9);
 });
 
 test("official and palette resume segments rebuild only unfinished color slots", () => {
@@ -119,12 +178,21 @@ test("official and palette resume segments rebuild only unfinished color slots",
   const officialPlan = generateScanlinePlan(pixelMap, profile);
   const officialCommands = serializeCommands(officialPlan.commands);
   const officialSegments = officialPlan.resumePlan.segments;
+  const expectedSquarePrefix = expectedBrushSetupPrefix(1, "square");
 
   assert.equal(officialSegments.length, 3);
-  assert.equal(officialSegments[0]?.resumePrefixCommands[0], "BC RESET");
-  assert.equal(officialSegments[1]?.resumePrefixCommands[0], "BC RESET");
-  assert.match(officialSegments[1]?.resumePrefixCommands[1] ?? "", /^BC 1 /u);
-  assert.match(officialSegments[1]?.resumePrefixCommands[2] ?? "", /^BC 2 /u);
+  assert.deepEqual(
+    officialSegments[0]?.resumePrefixCommands.slice(0, expectedSquarePrefix.length),
+    expectedSquarePrefix,
+  );
+  assert.equal(officialSegments[0]?.resumePrefixCommands[expectedSquarePrefix.length], "BC RESET");
+  assert.deepEqual(
+    officialSegments[1]?.resumePrefixCommands.slice(0, expectedSquarePrefix.length),
+    expectedSquarePrefix,
+  );
+  assert.equal(officialSegments[1]?.resumePrefixCommands[expectedSquarePrefix.length], "BC RESET");
+  assert.match(officialSegments[1]?.resumePrefixCommands[expectedSquarePrefix.length + 1] ?? "", /^BC 1 /u);
+  assert.match(officialSegments[1]?.resumePrefixCommands[expectedSquarePrefix.length + 2] ?? "", /^BC 2 /u);
   assert.equal(
     officialSegments[1]?.resumePrefixCommands.some((command) => /^BC 0 /u.test(command)),
     false,
@@ -145,10 +213,18 @@ test("official and palette resume segments rebuild only unfinished color slots",
   const palettePlan = generateScanlinePlan(pixelMap, paletteProfile);
   const paletteSegments = palettePlan.resumePlan.segments;
 
-  assert.match(paletteSegments[0]?.resumePrefixCommands[0] ?? "", /^PC 0 /u);
-  assert.match(paletteSegments[0]?.resumePrefixCommands[1] ?? "", /^PC 1 /u);
-  assert.match(paletteSegments[1]?.resumePrefixCommands[0] ?? "", /^PC 1 /u);
-  assert.match(paletteSegments[1]?.resumePrefixCommands[1] ?? "", /^PC 2 /u);
+  assert.deepEqual(
+    paletteSegments[0]?.resumePrefixCommands.slice(0, expectedSquarePrefix.length),
+    expectedSquarePrefix,
+  );
+  assert.match(paletteSegments[0]?.resumePrefixCommands[expectedSquarePrefix.length] ?? "", /^PC 0 /u);
+  assert.match(paletteSegments[0]?.resumePrefixCommands[expectedSquarePrefix.length + 1] ?? "", /^PC 1 /u);
+  assert.deepEqual(
+    paletteSegments[1]?.resumePrefixCommands.slice(0, expectedSquarePrefix.length),
+    expectedSquarePrefix,
+  );
+  assert.match(paletteSegments[1]?.resumePrefixCommands[expectedSquarePrefix.length] ?? "", /^PC 1 /u);
+  assert.match(paletteSegments[1]?.resumePrefixCommands[expectedSquarePrefix.length + 1] ?? "", /^PC 2 /u);
   assert.equal(
     paletteSegments[1]?.resumePrefixCommands.some((command) => /^PC 0 /u.test(command)),
     false,
@@ -457,23 +533,15 @@ test("recovery session API persists visible files across restarts and can discar
     assert.ok(startPayload.recoverySession);
     await access(startPayload.recoverySession.commandsFilePath);
 
-    let finalExecutionStatus = "idle";
-
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const statusResponse = await fetch(`${firstServer.url}/api/execution/status`);
-      const statusPayload = (await statusResponse.json()) as {
-        execution?: { status?: string };
-      };
-
-      finalExecutionStatus = statusPayload.execution?.status ?? finalExecutionStatus;
-
-      if (finalExecutionStatus === "completed") {
-        break;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-
+    const completionTimeoutMs = Math.max(
+      6_000,
+      estimateRuntimeMs(scanlinePlan.commands, profile) + 2_000,
+    );
+    const finalExecutionStatus = await waitForExecutionStatus(
+      firstServer.url,
+      "completed",
+      completionTimeoutMs,
+    );
     assert.equal(finalExecutionStatus, "completed");
 
     const completedSessionsResponse = await fetch(`${firstServer.url}/api/recovery/sessions`);
@@ -564,6 +632,8 @@ test("execution reset keeps unfinished recovery sessions recoverable", async () 
 
     const resetResponse = await fetch(`${server.url}/api/execution/reset`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
     });
     assert.equal(resetResponse.ok, true);
     const resetPayload = (await resetResponse.json()) as {
@@ -597,4 +667,41 @@ test("execution reset keeps unfinished recovery sessions recoverable", async () 
 
     await rm(recoverySessionsRoot, { recursive: true, force: true });
   }
+});
+
+test("execution start rejects unsupported round large-brush recovery sessions", async (t) => {
+  const recoverySessionsRoot = await mkdtemp(path.join(os.tmpdir(), "friendmaker-recovery-round-"));
+  t.after(async () => {
+    await rm(recoverySessionsRoot, { recursive: true, force: true });
+  });
+
+  const server = await startWebServer({ port: 0, recoverySessionsRoot });
+  t.after(async () => {
+    await server.close();
+  });
+
+  const response = await fetch(`${server.url}/api/execution/start`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      commands: ["CFG INPUT 65 45 1800", "E"],
+      target: "simulate",
+      profileSummary: {
+        brushSize: 3,
+        brushShape: "round",
+        colorMode: "mono",
+        templateId: "none",
+        templateLabel: "无模板（正方形）",
+        imageScalePercent: 100,
+        imageOffsetXPercent: 0,
+        imageOffsetYPercent: 0,
+      },
+    }),
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.status, 400);
+  const payload = (await response.json()) as { error?: string };
+  assert.match(payload.error ?? "", /圆形/u);
+  assert.match(payload.error ?? "", /暂不支持/u);
 });

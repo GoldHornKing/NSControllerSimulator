@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { calculatePathStats } from "../src/app/generateDrawPlan.js";
 import { estimateRuntimeMs, generateScanlinePlan } from "../src/path/scanline.js";
+import type { DrawCommand } from "../src/protocol/commands.js";
+import { serializeCommands } from "../src/protocol/serializer.js";
 import type { DrawingProfile, Pixel, PixelMap } from "../src/types.js";
 
 function makeProfile(overrides: Partial<DrawingProfile> = {}): DrawingProfile {
@@ -25,6 +27,7 @@ function makeProfile(overrides: Partial<DrawingProfile> = {}): DrawingProfile {
     monoThreshold: 128,
     palette: ["#000000", "#ffffff"],
     brushSize: 1,
+    brushShape: "square",
     startCursor: "center",
     startTool: "pen",
     startColorIndex: 0,
@@ -128,4 +131,33 @@ test("scanline avoids row-by-row waste on dashed long rows with brush size 1", (
     estimateRuntimeMs(plan.commands, profile) < 150_000,
     "expected dashed rows runtime to remain much lower than a naive row scan",
   );
+});
+
+test("square large brushes emit stride-aware line runs for contiguous rows", () => {
+  const profile = makeProfile({
+    canvasWidth: 9,
+    canvasHeight: 3,
+    brushSize: 3,
+    brushShape: "square",
+  });
+  const pixelMap = makePixelMap(3, 1, [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 2, y: 0 },
+  ]);
+
+  const plan = generateScanlinePlan(pixelMap, profile, "scanline");
+  const serialized = serializeCommands(plan.commands);
+  const strideLine = plan.commands.find((command) => command.type === "line");
+  const equivalentDiscreteSequence: DrawCommand[] = [
+    { type: "draw", button: "A" },
+    { type: "move", dx: 3, dy: 0 },
+    { type: "draw", button: "A" },
+    { type: "move", dx: 3, dy: 0 },
+    { type: "draw", button: "A" },
+  ];
+
+  assert.ok(serialized.includes("L 6 0 3"));
+  assert.ok(strideLine && strideLine.type === "line");
+  assert.equal(estimateRuntimeMs([strideLine], profile), estimateRuntimeMs(equivalentDiscreteSequence, profile));
 });

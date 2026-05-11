@@ -7,6 +7,7 @@ import { defineConfig } from "vite";
 
 import {
   createFirmwareManifest,
+  listFirmwareVariants,
   readFirmwareFlashPlan,
 } from "./scripts/firmware-site.mjs";
 
@@ -14,15 +15,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function firmwareDevPlugin() {
+  const variants = listFirmwareVariants();
+  const variantByManifestPath = new Map(
+    variants.map((variant) => [`/firmware/${variant.manifestFileName}`, variant]),
+  );
+  const variantByEnvironmentId = new Map(
+    variants.map((variant) => [variant.environmentId, variant]),
+  );
+
   return {
     name: "friend-maker-firmware-dev",
     configureServer(server) {
       server.middlewares.use(async (request, response, next) => {
         const url = request.url?.split("?")[0] ?? "";
+        const manifestVariant = variantByManifestPath.get(url);
 
-        if (url === "/firmware/manifest.json") {
+        if (manifestVariant) {
           try {
-            const manifest = await createFirmwareManifest();
+            const manifest = await createFirmwareManifest(manifestVariant.switchModelId);
             response.statusCode = 200;
             response.setHeader("Content-Type", "application/json; charset=utf-8");
             response.end(`${JSON.stringify(manifest, null, 2)}\n`);
@@ -35,18 +45,26 @@ function firmwareDevPlugin() {
           return;
         }
 
-        const match = /^\/firmware\/esp32dev_wireless\/([^/]+)$/u.exec(url);
-        if (!match?.[1]) {
+        const match = /^\/firmware\/([^/]+)\/([^/]+)$/u.exec(url);
+        const environmentId = match?.[1];
+        const publishFileName = match?.[2];
+        if (!environmentId || !publishFileName) {
           next();
           return;
         }
 
-        const firmwareParts = await readFirmwareFlashPlan();
-        const part = firmwareParts.find((entry) => entry.publishFileName === match[1]);
+        const variant = variantByEnvironmentId.get(environmentId);
+        if (!variant) {
+          next();
+          return;
+        }
+
+        const firmwareParts = await readFirmwareFlashPlan(variant.switchModelId);
+        const part = firmwareParts.find((entry) => entry.publishFileName === publishFileName);
         if (!part) {
           response.statusCode = 404;
           response.setHeader("Content-Type", "application/json; charset=utf-8");
-          response.end(`${JSON.stringify({ error: `Unknown firmware file: ${match[1]}` })}\n`);
+          response.end(`${JSON.stringify({ error: `Unknown firmware file: ${publishFileName}` })}\n`);
           return;
         }
 

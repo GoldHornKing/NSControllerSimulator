@@ -160,7 +160,7 @@ bool SwitchController::drawStroke() {
   return transport_.pressButton(ControllerButton::A, buttonPressMs_, inputDelayMs_);
 }
 
-bool SwitchController::drawLine(int dx, int dy) {
+bool SwitchController::drawLine(int dx, int dy, uint8_t stride) {
   waitUntilReady();
 
   const bool horizontal = dx != 0;
@@ -178,6 +178,26 @@ bool SwitchController::drawLine(int dx, int dy) {
 
   if (!transport_.pressButton(ControllerButton::A, buttonPressMs_, inputDelayMs_)) {
     return false;
+  }
+
+  if (stride > 1 && steps % stride == 0) {
+    const int hopCount = steps / stride;
+
+    // Square-brush stride lines still walk the canvas one grid cell at a time.
+    // The stride only reduces how often we press A to paint the next tile.
+    for (int hop = 0; hop < hopCount; hop += 1) {
+      for (uint8_t moveStep = 0; moveStep < stride; moveStep += 1) {
+        if (!transport_.pressButton(directionButton, buttonPressMs_, inputDelayMs_)) {
+          return false;
+        }
+      }
+
+      if (!transport_.pressButton(ControllerButton::A, buttonPressMs_, inputDelayMs_)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   for (int step = 0; step < steps; step += 1) {
@@ -424,6 +444,8 @@ bool SwitchController::resetBluetooth(bool reconnectLastPeer) {
   waitUntilReady();
   return transport_.resetConnection(reconnectLastPeer);
 }
+
+bool SwitchController::clearBluetoothPeer() { return transport_.clearStoredPeer(); }
 
 void SwitchController::pause() { paused_ = true; }
 

@@ -3,11 +3,15 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { generateDrawPlan } from "../app/generateDrawPlan.js";
 import { buildRecoveryExecutionPlan, deriveResumeProgress } from "../app/recovery.js";
+import {
+  getUnsupportedBrushShapeMessage,
+  normalizeBrushShape,
+} from "../brushBehavior.js";
 import { applyCliOptions, type CliOptions } from "../cli/args.js";
 import { DEFAULT_ACK_TIMEOUT_MS } from "../config/defaultProfile.js";
 import { loadProfile } from "../config/loadProfile.js";
@@ -173,9 +177,16 @@ const FIRMWARE_ENVIRONMENTS = [
 const SWITCH_MODELS = [
   {
     id: "switch",
-    label: "Switch / OLED / V2",
+    label: "Switch",
     description: "标准 Switch 固件行为。",
     recommended: true,
+  },
+  {
+    id: "switch2",
+    label: "Switch 2",
+    description:
+      "Switch 2 目前走更保守的 Bluetooth Classic HID 时序，并在认证成功后主动补发 virtual cable 请求。",
+    recommended: false,
   },
   {
     id: "switch_lite",
@@ -188,7 +199,11 @@ const SWITCH_MODELS = [
 type FirmwareEnvironmentId = (typeof FIRMWARE_ENVIRONMENTS)[number]["id"];
 type SwitchModelId = (typeof SWITCH_MODELS)[number]["id"];
 const SWITCH_LITE_UPLOAD_ENVIRONMENT_ID = "esp32dev_wireless_switch_lite" as const;
-type FirmwareUploadEnvironmentId = FirmwareEnvironmentId | typeof SWITCH_LITE_UPLOAD_ENVIRONMENT_ID;
+const SWITCH_2_UPLOAD_ENVIRONMENT_ID = "esp32dev_wireless_switch2" as const;
+type FirmwareUploadEnvironmentId =
+  | FirmwareEnvironmentId
+  | typeof SWITCH_LITE_UPLOAD_ENVIRONMENT_ID
+  | typeof SWITCH_2_UPLOAD_ENVIRONMENT_ID;
 const VALID_BRUSH_SIZES = new Set([1, 3, 7, 13, 19, 27] as const);
 type ExecutionTarget = "simulate" | "serial";
 type ExecutionStatus = "idle" | "running" | "paused" | "stopping" | "completed" | "failed" | "stopped";
@@ -357,6 +372,60 @@ function json(
   response.end(JSON.stringify(payload));
 }
 
+function readSingleHeaderValue(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return typeof value === "string" ? value : null;
+}
+
+function normalizeHeaderOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function assertTrustedApiRequest(request: IncomingMessage, url: URL): void {
+  if (request.method !== "POST" || !url.pathname.startsWith("/api/")) {
+    return;
+  }
+
+  const contentType = readSingleHeaderValue(request.headers["content-type"])
+    ?.split(";")[0]
+    ?.trim()
+    .toLowerCase();
+
+  if (contentType !== "application/json") {
+    throw new HttpError(415, "API requests must use application/json.");
+  }
+
+  const fetchSite = readSingleHeaderValue(request.headers["sec-fetch-site"])?.trim().toLowerCase();
+
+  if (fetchSite === "cross-site") {
+    throw new HttpError(403, "Cross-site API requests are not allowed.");
+  }
+
+  const expectedOrigin = url.origin;
+  const originHeader = readSingleHeaderValue(request.headers.origin);
+
+  if (originHeader) {
+    if (normalizeHeaderOrigin(originHeader) !== expectedOrigin) {
+      throw new HttpError(403, "Cross-origin API requests are not allowed.");
+    }
+
+    return;
+  }
+
+  const refererHeader = readSingleHeaderValue(request.headers.referer);
+
+  if (refererHeader && normalizeHeaderOrigin(refererHeader) !== expectedOrigin) {
+    throw new HttpError(403, "Cross-origin API requests are not allowed.");
+  }
+}
+
 function getContentType(filePath: string): string {
   if (filePath.endsWith(".png")) {
     return "image/png";
@@ -437,7 +506,16 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   }
 
   const raw = Buffer.concat(chunks).toString("utf8");
-  return raw.length > 0 ? JSON.parse(raw) : {};
+
+  if (raw.length === 0) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new HttpError(400, "Malformed JSON request body.");
+  }
 }
 
 function decodeDataUrl(dataUrl: string): Buffer {
@@ -488,6 +566,21 @@ interface ExecutionError extends Error {
   session?: SerialSessionSnapshot;
 }
 
+interface PlatformIoFailureError extends LoggedError {
+  exitCode?: number | null;
+  platformIoOutput?: string;
+}
+
+class HttpError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
 function createIdleFirmwareFlashState(): FirmwareFlashSnapshot {
   return {
     status: "idle",
@@ -533,6 +626,9 @@ export function summarizePlatformIoFailure(output: string, exitCode: number | nu
     .filter((line) => line.length > 0 && !line.startsWith("$ "));
 
   const priorityPatterns = [
+    /ModuleNotFoundError: No module named '(?:idf_component_manager|kconfiglib|future)'/iu,
+    /linker script generation failed/iu,
+    /failed to parse .*linker\.lf/iu,
     /A fatal error occurred:/iu,
     /Timed out waiting for packet header/iu,
     /Failed to connect/iu,
@@ -543,6 +639,7 @@ export function summarizePlatformIoFailure(output: string, exitCode: number | nu
     /Permission(?:Error| denied)/iu,
     /Access is denied/iu,
     /Resource temporarily unavailable/iu,
+    /^ERROR:/iu,
     /^Error:/iu,
     /^Exception:/iu,
   ];
@@ -555,6 +652,11 @@ export function summarizePlatformIoFailure(output: string, exitCode: number | nu
   }
 
   return lines.at(-1) ?? `PlatformIO exited with code ${String(exitCode ?? "unknown")}`;
+}
+
+export function isEspIdfPythonDependencyFailure(output: string): boolean {
+  return /ModuleNotFoundError: No module named '(?:idf_component_manager|kconfiglib|future)'|linker script generation failed|failed to parse .*linker\.lf|Expected end of text, found 'i'|pyparsing/iu
+    .test(output);
 }
 
 function getFirmwareEnvironment(environmentId: string): (typeof FIRMWARE_ENVIRONMENTS)[number] {
@@ -581,15 +683,33 @@ function resolveFirmwareUploadEnvironment(
   environmentId: FirmwareEnvironmentId,
   switchModelId: SwitchModelId,
 ): FirmwareUploadEnvironmentId {
-  if (switchModelId !== "switch_lite") {
-    return environmentId;
+  switch (switchModelId) {
+    case "switch":
+      return environmentId;
+    case "switch2":
+      if (environmentId === "esp32dev_wireless") {
+        return SWITCH_2_UPLOAD_ENVIRONMENT_ID;
+      }
+      throw new Error("Switch 2 目前仅支持 ESP32-WROOM-32 / ESP-32S 硬件环境。");
+    case "switch_lite":
+      if (environmentId === "esp32dev_wireless") {
+        return SWITCH_LITE_UPLOAD_ENVIRONMENT_ID;
+      }
+      throw new Error("Switch Lite 目前仅支持 ESP32-WROOM-32 / ESP-32S 硬件环境。");
   }
 
-  if (environmentId === "esp32dev_wireless") {
-    return SWITCH_LITE_UPLOAD_ENVIRONMENT_ID;
-  }
+  return environmentId;
+}
 
-  throw new Error("Switch Lite 目前仅支持 ESP32-WROOM-32 / ESP-32S 硬件环境。");
+function getFirmwareUploadEnvironmentLabel(environmentId: FirmwareUploadEnvironmentId): string {
+  switch (environmentId) {
+    case SWITCH_2_UPLOAD_ENVIRONMENT_ID:
+      return "ESP32-WROOM-32 / ESP-32S（Switch 2）";
+    case SWITCH_LITE_UPLOAD_ENVIRONMENT_ID:
+      return "ESP32-WROOM-32 / ESP-32S（Switch Lite）";
+    default:
+      return getFirmwareEnvironment(environmentId).label;
+  }
 }
 
 class FirmwareFlashManager {
@@ -617,10 +737,7 @@ class FirmwareFlashManager {
 
     const environment = {
       id: options.environmentId,
-      label:
-        options.environmentId === SWITCH_LITE_UPLOAD_ENVIRONMENT_ID
-          ? "ESP32-WROOM-32 / ESP-32S（Switch Lite）"
-          : getFirmwareEnvironment(options.environmentId).label,
+      label: getFirmwareUploadEnvironmentLabel(options.environmentId),
     };
     const selectedPortPath = preferSerialPath(options.portPath);
     const session = await serialSessionManager.disconnect();
@@ -712,6 +829,13 @@ class FirmwareFlashManager {
       }
 
       this.state.uploadPortPath = selectedPortPath;
+      const compatibility = await webRuntime.toolingManager.ensureManagedPlatformIoCompatibility({
+        platformIoPath,
+        onLine: (line) => this.appendLine(line),
+      });
+      if (compatibility.targets.length > 0 && compatibility.repaired > 0) {
+        await this.clearBuildArtifacts(firmwareRoot);
+      }
 
       try {
         await this.runPlatformIoUpload(environment.id, selectedPortPath);
@@ -720,6 +844,18 @@ class FirmwareFlashManager {
       } catch (error) {
         if (this.cancelRequested) {
           throw error;
+        }
+
+        if (
+          await this.retryAfterManagedPlatformIoRepair(error, {
+            environmentId: environment.id,
+            firmwareRoot,
+            platformIoPath,
+            selectedPortPath,
+          })
+        ) {
+          this.finish("completed", null);
+          return;
         }
 
         const message = error instanceof Error ? error.message : String(error);
@@ -758,6 +894,52 @@ class FirmwareFlashManager {
       this.appendLine(`WARN failed to refresh serial ports before flashing: ${message}`);
       return [];
     }
+  }
+
+  private async clearBuildArtifacts(firmwareRoot: string): Promise<void> {
+    await rm(path.join(firmwareRoot, ".pio", "build"), { recursive: true, force: true });
+    this.appendLine("INFO cleared PlatformIO build cache after dependency repair");
+  }
+
+  private async retryAfterManagedPlatformIoRepair(
+    error: unknown,
+    options: {
+      environmentId: FirmwareUploadEnvironmentId;
+      firmwareRoot: string;
+      platformIoPath: string;
+      selectedPortPath: string;
+    },
+  ): Promise<boolean> {
+    const output =
+      error instanceof Error && "platformIoOutput" in error && typeof error.platformIoOutput === "string"
+        ? error.platformIoOutput
+        : error instanceof Error
+          ? error.message
+          : String(error);
+
+    if (!isEspIdfPythonDependencyFailure(output)) {
+      return false;
+    }
+
+    if (!webRuntime.toolingManager.isAppManagedPlatformIo(options.platformIoPath)) {
+      return false;
+    }
+
+    this.appendLine("WARN detected managed ESP-IDF Python dependency mismatch; attempting auto-repair");
+    const compatibility = await webRuntime.toolingManager.ensureManagedPlatformIoCompatibility({
+      platformIoPath: options.platformIoPath,
+      onLine: (line) => this.appendLine(line),
+    });
+
+    if (compatibility.targets.length === 0) {
+      this.appendLine("WARN auto-repair skipped because no managed PlatformIO Python virtualenvs were found");
+      return false;
+    }
+
+    await this.clearBuildArtifacts(options.firmwareRoot);
+    this.appendLine("INFO retrying firmware flash after PlatformIO Python repair");
+    await this.runPlatformIoUpload(options.environmentId, options.selectedPortPath);
+    return true;
   }
 
   private async runPlatformIoUpload(
@@ -861,7 +1043,10 @@ class FirmwareFlashManager {
         }
 
         const message = summarizePlatformIoFailure(output, exitCode);
-        finish(() => reject(markLogged(new Error(message))));
+        const failure = markLogged(new Error(message)) as PlatformIoFailureError;
+        failure.exitCode = exitCode;
+        failure.platformIoOutput = output;
+        finish(() => reject(failure));
       });
 
       this.timeoutTimer = setTimeout(() => {
@@ -975,6 +1160,7 @@ function normalizeRecoveryProfileSummary(value: unknown): ExecutionStartProfileS
 
   return {
     brushSize: normalizeBrushSize(summary.brushSize, 3),
+    brushShape: normalizeBrushShape(summary.brushShape, "square"),
     colorMode:
       summary.colorMode === "official" || summary.colorMode === "palette" ? summary.colorMode : "mono",
     templateId: typeof summary.templateId === "string" ? summary.templateId : "none",
@@ -983,6 +1169,33 @@ function normalizeRecoveryProfileSummary(value: unknown): ExecutionStartProfileS
     imageOffsetXPercent: normalizeImageOffsetPercent(summary.imageOffsetXPercent),
     imageOffsetYPercent: normalizeImageOffsetPercent(summary.imageOffsetYPercent),
   };
+}
+
+function normalizeRecoverySessionSummary(summary: RecoverySessionSummary): RecoverySessionSummary {
+  return {
+    ...summary,
+    profileSummary: normalizeRecoveryProfileSummary(summary.profileSummary),
+  };
+}
+
+function normalizeRecoverySessionRecord(record: RecoverySessionRecord): RecoverySessionRecord {
+  return {
+    ...record,
+    profileSummary: normalizeRecoveryProfileSummary(record.profileSummary),
+  };
+}
+
+function assertSupportedBrushSelection(
+  brushShape: "square" | "round",
+  brushSize: number,
+): void {
+  const normalizedBrushShape = normalizeBrushShape(brushShape, "square");
+  const normalizedBrushSize = normalizeBrushSize(brushSize, 1);
+  const message = getUnsupportedBrushShapeMessage(normalizedBrushShape, normalizedBrushSize);
+
+  if (message) {
+    throw new HttpError(400, message);
+  }
 }
 
 function isManagedExecutionActive(status: ExecutionStatus): boolean {
@@ -1000,7 +1213,9 @@ function appendManagedExecutionLine(execution: ManagedExecution, line: string): 
 function getManagedExecutionRecoverySummary(
   execution: ManagedExecution,
 ): RecoverySessionSummary | null {
-  return execution.recoverySession ? summarizeRecoverySession(execution.recoverySession) : null;
+  return execution.recoverySession
+    ? normalizeRecoverySessionSummary(summarizeRecoverySession(execution.recoverySession))
+    : null;
 }
 
 function snapshotManagedExecution(execution: ManagedExecution = managedExecution): Record<string, unknown> {
@@ -1088,6 +1303,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
     templateId?: string;
     size?: number;
     brushSize?: number;
+    brushShape?: "square" | "round";
     imageScalePercent?: number;
     imageOffsetXPercent?: number;
     imageOffsetYPercent?: number;
@@ -1138,12 +1354,14 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
   const profile = {
     ...baseProfile,
     brushSize: normalizeBrushSize(body.brushSize, baseProfile.brushSize),
+    brushShape: normalizeBrushShape(body.brushShape, baseProfile.brushShape),
     inputDelay: normalizeTimingDuration(body.inputDelay, baseProfile.inputDelay),
     buttonPressDuration: normalizeTimingDuration(
       body.buttonPressDuration,
       baseProfile.buttonPressDuration,
     ),
   };
+  assertSupportedBrushSelection(profile.brushShape, profile.brushSize);
   const drawingMask = await loadDrawingTemplateMask(template.id, profile.canvasWidth, profile.canvasHeight);
 
   const plan = await generateDrawPlan(
@@ -1165,6 +1383,7 @@ async function handleGenerate(request: IncomingMessage, response: ServerResponse
       canvasWidth: profile.canvasWidth,
       canvasHeight: profile.canvasHeight,
       brushSize: profile.brushSize,
+      brushShape: profile.brushShape,
       templateId: template.id,
       templateLabel: template.label,
       imageScalePercent,
@@ -1692,10 +1911,16 @@ async function handleExecutionStart(
 
     const target: ExecutionTarget = body.target === "simulate" ? "simulate" : "serial";
     const portPath = target === "serial" ? preferSerialPath(body.portPath ?? "") : null;
+    const normalizedProfileSummary = normalizeRecoveryProfileSummary(body.profileSummary);
 
     if (target === "serial" && !portPath) {
       throw new Error("Missing portPath.");
     }
+
+    assertSupportedBrushSelection(
+      normalizedProfileSummary.brushShape,
+      normalizedProfileSummary.brushSize,
+    );
 
     const recoverySession =
       body.resumePlan && typeof body.resumePlan === "object"
@@ -1706,7 +1931,7 @@ async function handleExecutionStart(
               typeof body.sourceLabel === "string" && body.sourceLabel.trim().length > 0
                 ? body.sourceLabel.trim()
                 : "untitled-drawing",
-            profileSummary: normalizeRecoveryProfileSummary(body.profileSummary),
+            profileSummary: normalizedProfileSummary,
             serialOptions: {
               baudRate: body.baudRate ?? 115200,
               ackTimeoutMs: normalizeAckTimeoutMs(body.ackTimeoutMs),
@@ -1883,9 +2108,11 @@ async function handleExecutionReset(response: ServerResponse): Promise<void> {
 }
 
 async function handleRecoverySessions(response: ServerResponse): Promise<void> {
+  const sessions = await webRuntime.recoverySessions.listSessions();
+
   json(response, 200, {
     success: true,
-    sessions: await webRuntime.recoverySessions.listSessions(),
+    sessions: sessions.map(normalizeRecoverySessionSummary),
   });
 }
 
@@ -1913,7 +2140,13 @@ async function handleRecoveryResume(
       throw new Error("Missing portPath.");
     }
 
-    const recoverySession = await webRuntime.recoverySessions.loadSession(body.sessionId);
+    const recoverySession = normalizeRecoverySessionRecord(
+      await webRuntime.recoverySessions.loadSession(body.sessionId),
+    );
+    assertSupportedBrushSelection(
+      recoverySession.profileSummary.brushShape,
+      recoverySession.profileSummary.brushSize,
+    );
     const commands = await webRuntime.recoverySessions.loadCommands(body.sessionId);
     const recoveryPlan = buildRecoveryExecutionPlan({
       commands,
@@ -2016,6 +2249,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     const url = new URL(request.url, `http://${webRuntime.host}:${webRuntime.port}`);
+    assertTrustedApiRequest(request, url);
 
     if (request.method === "GET" && url.pathname === "/") {
       await serveStatic(response, "index.html");
@@ -2177,73 +2411,108 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     json(response, 404, { error: "Not found." });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    json(response, 500, { error: message });
+    const statusCode = error instanceof HttpError ? error.statusCode : 500;
+    json(response, statusCode, { error: message });
   }
 }
+
+let webServerLeaseHeld = false;
 
 export async function startWebServer(
   options: StartWebServerOptions = {},
 ): Promise<WebServerHandle> {
-  webRuntime = {
-    host: options.host ?? defaultHost,
-    port: options.port ?? defaultPort,
-    staticRoot: options.staticRoot ?? defaultStaticRoot,
-    firmwareRoot: options.firmwareRoot ?? defaultFirmwareRoot,
-    refreshFirmwareRoot: options.refreshFirmwareRoot,
-    toolingManager: new FirmwareToolingManager({
-      appDataRoot: options.appDataRoot ?? defaultAppDataRoot,
-      ...(options.toolingPaths ? { initialConfig: options.toolingPaths } : {}),
-    }),
-    windowsSerialDriverManager: new WindowsSerialDriverManager(
-      options.windowsDriverRoot ?? defaultWindowsDriverRoot,
-    ),
-    flashManager: new FirmwareFlashManager(),
-    recoverySessions: new RecoverySessionStore(
-      options.recoverySessionsRoot ?? defaultRecoverySessionsRoot,
-    ),
-  };
+  if (webServerLeaseHeld) {
+    throw new Error("A web server is already running in this process.");
+  }
 
-  await webRuntime.recoverySessions.cleanupSessions({ startup: true });
+  webServerLeaseHeld = true;
+  let server: Server | null = null;
 
-  const server = createServer(handleRequest);
-
-  await new Promise<void>((resolve, reject) => {
-    const handleError = (error: Error): void => {
-      reject(error);
+  try {
+    webRuntime = {
+      host: options.host ?? defaultHost,
+      port: options.port ?? defaultPort,
+      staticRoot: options.staticRoot ?? defaultStaticRoot,
+      firmwareRoot: options.firmwareRoot ?? defaultFirmwareRoot,
+      refreshFirmwareRoot: options.refreshFirmwareRoot,
+      toolingManager: new FirmwareToolingManager({
+        appDataRoot: options.appDataRoot ?? defaultAppDataRoot,
+        ...(options.toolingPaths ? { initialConfig: options.toolingPaths } : {}),
+      }),
+      windowsSerialDriverManager: new WindowsSerialDriverManager(
+        options.windowsDriverRoot ?? defaultWindowsDriverRoot,
+      ),
+      flashManager: new FirmwareFlashManager(),
+      recoverySessions: new RecoverySessionStore(
+        options.recoverySessionsRoot ?? defaultRecoverySessionsRoot,
+      ),
     };
 
-    server.once("error", handleError);
-    server.listen(webRuntime.port, webRuntime.host, () => {
-      server.off("error", handleError);
-      resolve();
-    });
-  });
+    await webRuntime.recoverySessions.cleanupSessions({ startup: true });
 
-  const address = server.address();
-  const actualPort = typeof address === "object" && address !== null ? address.port : webRuntime.port;
-  webRuntime.port = actualPort;
+    server = createServer(handleRequest);
+    const activeServer = server;
 
-  return {
-    server,
-    host: webRuntime.host,
-    port: actualPort,
-    url: `http://${webRuntime.host}:${actualPort}`,
-    close: async () => {
-      await webRuntime.flashManager.shutdown();
-      await serialSessionManager.disconnect({ force: true }).catch(() => undefined);
-      resetManagedExecutionState();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
+    await new Promise<void>((resolve, reject) => {
+      const handleError = (error: Error): void => {
+        reject(error);
+      };
 
-          resolve();
-        });
+      activeServer.once("error", handleError);
+      activeServer.listen(webRuntime.port, webRuntime.host, () => {
+        activeServer.off("error", handleError);
+        resolve();
       });
-    },
-  };
+    });
+
+    const address = activeServer.address();
+    const actualPort = typeof address === "object" && address !== null ? address.port : webRuntime.port;
+    webRuntime.port = actualPort;
+    let closed = false;
+
+    return {
+      server: activeServer,
+      host: webRuntime.host,
+      port: actualPort,
+      url: `http://${webRuntime.host}:${actualPort}`,
+      close: async () => {
+        if (closed) {
+          return;
+        }
+
+        closed = true;
+
+        try {
+          await webRuntime.flashManager.shutdown();
+          await serialSessionManager.disconnect({ force: true }).catch(() => undefined);
+          resetManagedExecutionState();
+          await new Promise<void>((resolve, reject) => {
+            activeServer.close((error) => {
+              if (error) {
+                reject(error);
+                return;
+              }
+
+              resolve();
+            });
+          });
+        } finally {
+          webServerLeaseHeld = false;
+        }
+      },
+    };
+  } catch (error) {
+    webServerLeaseHeld = false;
+
+    if (server) {
+      const activeServer = server;
+      await new Promise<void>((resolve) => {
+        activeServer.close(() => resolve());
+      }).catch(() => undefined);
+    }
+
+    throw error;
+  }
 }
 
 function isDirectRun(): boolean {

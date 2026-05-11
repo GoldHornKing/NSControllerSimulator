@@ -3,11 +3,14 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 
-import { createFirmwareManifest, readFirmwareFlashPlan, siteRoot } from "./firmware-site.mjs";
+import {
+  createFirmwareManifest,
+  listFirmwareVariants,
+  readFirmwareFlashPlan,
+  siteRoot,
+} from "./firmware-site.mjs";
 
 const pagesRoot = path.join(siteRoot, "dist", "pages");
-const manifestPath = path.join(pagesRoot, "firmware", "manifest.json");
-const publishedFirmwareRoot = path.join(pagesRoot, "firmware", "esp32dev_wireless");
 
 async function assertFileExists(filePath) {
   if (!existsSync(filePath)) {
@@ -22,33 +25,44 @@ async function assertFileExists(filePath) {
 
 async function main() {
   await assertFileExists(path.join(pagesRoot, "index.html"));
-  await assertFileExists(manifestPath);
+  const firmwareVariants = listFirmwareVariants();
 
-  const flashPlan = await readFirmwareFlashPlan();
-  for (const part of flashPlan) {
-    await assertFileExists(path.join(publishedFirmwareRoot, part.publishFileName));
+  for (const variant of firmwareVariants) {
+    const manifestPath = path.join(pagesRoot, "firmware", variant.manifestFileName);
+    const publishedFirmwareRoot = path.join(pagesRoot, "firmware", variant.environmentId);
+    await assertFileExists(manifestPath);
+
+    const flashPlan = await readFirmwareFlashPlan(variant.switchModelId);
+    for (const part of flashPlan) {
+      await assertFileExists(path.join(publishedFirmwareRoot, part.publishFileName));
+    }
+
+    const actualManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const expectedManifest = await createFirmwareManifest(variant.switchModelId);
+
+    assert.equal(actualManifest.name, expectedManifest.name, "manifest name should match");
+    assert.equal(actualManifest.version, expectedManifest.version, "manifest version should match");
+    assert.equal(
+      actualManifest.metadata?.desktopReleaseUrl,
+      expectedManifest.metadata?.desktopReleaseUrl,
+      "desktop release URL should match the derived release info",
+    );
+    assert.deepEqual(
+      actualManifest.builds,
+      expectedManifest.builds,
+      "manifest firmware parts should match the normalized flash plan",
+    );
+    assert.deepEqual(
+      actualManifest.metadata?.sha256,
+      expectedManifest.metadata?.sha256,
+      "manifest SHA256 metadata should match the published firmware files",
+    );
+    assert.equal(
+      actualManifest.metadata?.switchModelId,
+      variant.switchModelId,
+      "manifest switch model should match variant",
+    );
   }
-
-  const actualManifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  const expectedManifest = await createFirmwareManifest();
-
-  assert.equal(actualManifest.name, expectedManifest.name, "manifest name should match");
-  assert.equal(actualManifest.version, expectedManifest.version, "manifest version should match");
-  assert.equal(
-    actualManifest.metadata?.desktopReleaseUrl,
-    expectedManifest.metadata?.desktopReleaseUrl,
-    "desktop release URL should match the derived release info",
-  );
-  assert.deepEqual(
-    actualManifest.builds,
-    expectedManifest.builds,
-    "manifest firmware parts should match the normalized flash plan",
-  );
-  assert.deepEqual(
-    actualManifest.metadata?.sha256,
-    expectedManifest.metadata?.sha256,
-    "manifest SHA256 metadata should match the published firmware files",
-  );
 }
 
 main().catch((error) => {

@@ -1,4 +1,5 @@
 import type { ImageSource } from "../image/loadImage.js";
+import { getUnsupportedBrushShapeMessageForProfile } from "../brushBehavior.js";
 import { createBrushGrid, gridCellBounds, isGridCellInBounds } from "../brushGrid.js";
 import { pixelizeImage } from "../image/pixelize.js";
 import { renderPreviewToBuffer } from "../image/renderPreview.js";
@@ -41,6 +42,12 @@ export async function generateDrawPlan(
     pathStrategy?: PathStrategy;
   },
 ): Promise<DrawPlan> {
+  const unsupportedBrushShapeMessage = getUnsupportedBrushShapeMessageForProfile(profile);
+
+  if (unsupportedBrushShapeMessage) {
+    throw new Error(unsupportedBrushShapeMessage);
+  }
+
   const { pixelMap, usedColorIndexes } = await pixelizeImage(imageSource, profile, options);
   const previewPng = await renderPreviewToBuffer(pixelMap, profile, previewScale);
   const scanlinePlan = generateScanlinePlan(pixelMap, profile, options?.pathStrategy);

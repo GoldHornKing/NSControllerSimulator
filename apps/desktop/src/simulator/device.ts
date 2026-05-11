@@ -1,4 +1,5 @@
 import { parseSequencedFrame, type SequencedFrame } from "../protocol/sequencing.js";
+import { getLineCommandMetrics } from "../protocol/lineMetrics.js";
 import { DEFAULT_SAFE_INPUT_TIMING, parseInputConfigCommand, type InputTiming } from "../protocol/timing.js";
 
 function parseTwoInts(line: string): { first: number; second: number } | null {
@@ -16,6 +17,35 @@ function parseTwoInts(line: string): { first: number; second: number } | null {
   }
 
   return { first, second };
+}
+
+function parseLineCommand(line: string): { dx: number; dy: number; stride: number } | null {
+  const parts = line.trim().split(/\s+/u);
+
+  if (parts.length !== 3 && parts.length !== 4) {
+    return null;
+  }
+
+  const dx = Number.parseInt(parts[1] ?? "", 10);
+  const dy = Number.parseInt(parts[2] ?? "", 10);
+  const stride = parts.length === 4 ? Number.parseInt(parts[3] ?? "", 10) : 1;
+
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(stride) || stride <= 0) {
+    return null;
+  }
+
+  return { dx, dy, stride };
+}
+
+function parseButtonCommand(line: string): string | null {
+  const parts = line.trim().split(/\s+/u);
+
+  if (parts.length !== 2 || parts[0] !== "BTN") {
+    return null;
+  }
+
+  const token = parts[1] ?? "";
+  return token.length > 0 ? token : null;
 }
 
 function parseOneInt(line: string): number | null {
@@ -267,17 +297,17 @@ export class SimulatedDevice {
     }
 
     if (trimmed.startsWith("L ")) {
-      const parsed = parseTwoInts(trimmed);
+      const parsed = parseLineCommand(trimmed);
 
-      if (!parsed || (parsed.first === 0 && parsed.second === 0) || (parsed.first !== 0 && parsed.second !== 0)) {
+      if (!parsed || (parsed.dx === 0 && parsed.dy === 0) || (parsed.dx !== 0 && parsed.dy !== 0)) {
         await delay(options.ackDelayMs);
         return this.cacheAndReturn(frame, this.makeError(frame, "invalid line"), lines);
       }
 
-      this.state.drawCount += 1;
-      this.state.x += parsed.first;
-      this.state.y += parsed.second;
-      this.state.drawCount += Math.abs(parsed.first) + Math.abs(parsed.second);
+      const metrics = getLineCommandMetrics(parsed.dx, parsed.dy, parsed.stride);
+      this.state.x += parsed.dx;
+      this.state.y += parsed.dy;
+      this.state.drawCount += metrics.drawCount;
       await delay(options.ackDelayMs);
       return this.cacheAndReturn(frame, this.makeAck(frame), lines);
     }
@@ -304,6 +334,18 @@ export class SimulatedDevice {
       }
 
       await delay(waitMs + options.ackDelayMs);
+      return this.cacheAndReturn(frame, this.makeAck(frame), lines);
+    }
+
+    if (trimmed.startsWith("BTN ")) {
+      const button = parseButtonCommand(trimmed);
+
+      if (!button) {
+        await delay(options.ackDelayMs);
+        return this.cacheAndReturn(frame, this.makeError(frame, "invalid button"), lines);
+      }
+
+      await delay(options.ackDelayMs);
       return this.cacheAndReturn(frame, this.makeAck(frame), lines);
     }
 
