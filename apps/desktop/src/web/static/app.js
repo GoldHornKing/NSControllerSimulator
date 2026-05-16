@@ -9,6 +9,90 @@ import {
   syncStudioColorCountState,
 } from "./studioColorCountState.js";
 
+document.documentElement.dataset.platform = window.friendMakerWindow?.platform ?? "browser";
+
+function translateUiText(value) {
+  try {
+    return window.FriendMakerI18n?.translateText?.(value) ?? value;
+  } catch {
+    return value;
+  }
+}
+
+function translateUiBlock(value) {
+  return value
+    .split("\n")
+    .map((line) => translateUiText(line))
+    .join("\n");
+}
+
+function confirmUi(message) {
+  return window.confirm(translateUiText(message));
+}
+
+const PANEL_LAYOUT_STORAGE_KEY = "friendmaker.panelLayout.v1";
+const PANEL_LAYOUT_RATIO_MIN = 0.08;
+const STUDIO_PREVIEW_COLUMN_MIN_PX = 568;
+
+const PANEL_LAYOUTS = {
+  studio: {
+    columns: {
+      count: 3,
+      vars: ["--layout-studio-col-1", "--layout-studio-col-2", "--layout-studio-col-3"],
+      defaults: [0.95, 1, 0.82],
+      minPixels: [250, STUDIO_PREVIEW_COLUMN_MIN_PX, 190],
+    },
+    rows: {
+      count: 2,
+      vars: ["--layout-studio-row-1", "--layout-studio-row-2"],
+      defaults: [1.15, 0.85],
+      minPixels: [260, 160],
+    },
+  },
+  firmware: {
+    columns: {
+      count: 2,
+      vars: ["--layout-firmware-col-1", "--layout-firmware-col-2"],
+      defaults: [0.95, 0.75],
+      minPixels: [280, 260],
+    },
+    rows: {
+      count: 2,
+      vars: ["--layout-firmware-row-1", "--layout-firmware-row-2"],
+      defaults: [0.9, 1],
+      minPixels: [220, 180],
+    },
+  },
+  controller: {
+    columns: {
+      count: 2,
+      vars: ["--layout-controller-col-1", "--layout-controller-col-2"],
+      defaults: [1, 0.8],
+      minPixels: [300, 260],
+    },
+    rows: {
+      count: 2,
+      vars: ["--layout-controller-row-1", "--layout-controller-row-2"],
+      defaults: [1, 0.58],
+      minPixels: [260, 160],
+    },
+  },
+  timing: {
+    columns: {
+      count: 2,
+      vars: ["--layout-timing-col-1", "--layout-timing-col-2"],
+      defaults: [1, 0.9],
+      minPixels: [300, 280],
+    },
+    rows: {
+      count: 3,
+      vars: ["--layout-timing-row-1", "--layout-timing-row-2", "--layout-timing-row-3"],
+      defaults: [0.42, 1, 0.42],
+      minPixels: [150, 260, 140],
+    },
+  },
+};
+
 const state = {
   activePage: "studio",
   imageDataUrl: null,
@@ -219,8 +303,26 @@ const state = {
 };
 
 const els = {
+  windowMinimizeButton: document.getElementById("window-minimize-button"),
+  windowMaximizeButton: document.getElementById("window-maximize-button"),
+  windowCloseButton: document.getElementById("window-close-button"),
+  titlePageLabel: document.getElementById("title-page-label"),
+  titlePortStatus: document.getElementById("title-port-status"),
+  workspaceTitle: document.getElementById("workspace-title"),
+  workspaceStatus: document.getElementById("workspace-status"),
+  workspaceContent: document.querySelector(".workspace-content"),
+  sidebarPortDot: document.getElementById("sidebar-port-dot"),
+  sidebarControllerDot: document.getElementById("sidebar-controller-dot"),
+  sidebarPortStatus: document.getElementById("sidebar-port-status"),
+  sidebarControllerStatus: document.getElementById("sidebar-controller-status"),
+  statusbarPage: document.getElementById("statusbar-page"),
+  statusbarPort: document.getElementById("statusbar-port"),
+  statusbarController: document.getElementById("statusbar-controller"),
+  statusbarExecution: document.getElementById("statusbar-execution"),
   pageTabs: [...document.querySelectorAll(".page-tab")],
   pages: [...document.querySelectorAll(".page")],
+  resizableLayouts: [...document.querySelectorAll("[data-layout-id].resizable-layout")],
+  layoutSplitters: [...document.querySelectorAll("[data-layout-splitter]")],
   imageInput: document.getElementById("image-input"),
   fileLabel: document.getElementById("file-label"),
   studioConnectionCard: document.getElementById("studio-connection-card"),
@@ -295,8 +397,10 @@ const els = {
   firmwareStopButton: document.getElementById("firmware-stop-button"),
   firmwarePlatformIoHint: document.getElementById("firmware-platformio-hint"),
   firmwareEnvHint: document.getElementById("firmware-env-hint"),
+  firmwareWebFlasherHint: document.getElementById("firmware-web-flasher-hint"),
   windowsDriverPanel: document.getElementById("windows-driver-panel"),
   windowsDriverHint: document.getElementById("windows-driver-hint"),
+  firmwareOpenControllerButton: document.getElementById("firmware-open-controller-button"),
   installCp210xDriverButton: document.getElementById("install-cp210x-driver-button"),
   installCh341DriverButton: document.getElementById("install-ch341-driver-button"),
   firmwareStatusCard: document.getElementById("firmware-status-card"),
@@ -430,7 +534,7 @@ const TIMING_BENCHMARK_MODES = {
     pattern: "square-spiral",
     spiralDepth: 6,
     confirmMessage:
-      "开始前请确认：Switch 已经进入绘画页、当前是画笔工具、最好切到 1 号笔、画笔停在画布中心，并且从现在开始不要再碰手柄或屏幕。现在开始运行快速检查（标准方圈）吗？",
+      "开始前请确认：Switch 已经进入绘画页、当前是画笔工具；这组测速不会自动切笔刷，最好先手动切到 1 号笔。画笔停在画布中心，并且从现在开始不要再碰手柄或屏幕。现在开始运行快速检查（标准方圈）吗？",
     runningDetail:
       "正在跑快速检查（标准方圈）。请观察拐角会不会失真、转向会不会歪，以及有没有明显漏笔、跳笔或漂移。",
     successDetail:
@@ -442,7 +546,7 @@ const TIMING_BENCHMARK_MODES = {
     pattern: "square-spiral",
     spiralDepth: 12,
     confirmMessage:
-      "开始前请确认：Switch 已经进入绘画页、当前是画笔工具、最好切到 1 号笔、画笔停在画布中心，并且从现在开始不要再碰手柄或屏幕。现在开始运行累计漂移检查（长程方圈）吗？",
+      "开始前请确认：Switch 已经进入绘画页、当前是画笔工具；这组测速不会自动切笔刷，最好先手动切到 1 号笔。画笔停在画布中心，并且从现在开始不要再碰手柄或屏幕。现在开始运行累计漂移检查（长程方圈）吗？",
     runningDetail:
       "正在跑累计漂移检查（长程方圈）。请重点看长一点之后会不会越跑越偏，拐角会不会越来越不规整。",
     successDetail:
@@ -456,7 +560,7 @@ const TIMING_BENCHMARK_MODES = {
     columnCount: 240,
     centerAroundCurrent: true,
     confirmMessage:
-      "开始前请确认：Switch 已经进入绘画页、当前是画笔工具、最好切到 1 号笔、画笔停在画布中心，并且从现在开始不要再碰手柄或屏幕。这个基准会先以当前中心为中线左移到起画点，再连续画 6 行 x 240 点，共 1440 次落笔、2998 条动作，专门复现长直线和蛇形换行后的慢性偏移。现在开始运行 6 行 x 240 点阵复现基准吗？",
+      "开始前请确认：Switch 已经进入绘画页、当前是画笔工具；这组测速不会自动切笔刷，最好先手动切到 1 号笔。画笔停在画布中心，并且从现在开始不要再碰手柄或屏幕。这个基准会先以当前中心为中线左移到起画点，再连续画 6 行 x 240 点，共 1440 次落笔、2998 条动作，专门复现长直线和蛇形换行后的慢性偏移。现在开始运行 6 行 x 240 点阵复现基准吗？",
     runningDetail:
       "正在跑真实长程复现（以中心为基准的 6 行 x 240 点阵）。请重点观察每行后半段、换行后的首点，以及长时间连续落笔后有没有慢性累积偏移。",
     successDetail:
@@ -465,6 +569,24 @@ const TIMING_BENCHMARK_MODES = {
 };
 
 const VALID_PAGE_NAMES = new Set(["studio", "firmware", "controller", "timing"]);
+const PAGE_UI_COPY = {
+  studio: {
+    title: "脚本生成",
+    status: "导入图片，检查预览，然后开始绘制。",
+  },
+  firmware: {
+    title: "刷入固件",
+    status: "选择型号、环境和串口后刷入 ESP32 固件。",
+  },
+  controller: {
+    title: "手柄测试",
+    status: "连接手柄并验证方向、按键和蓝牙状态。",
+  },
+  timing: {
+    title: "调试测速",
+    status: "先调稳定等待，再用短测和长测确认参数。",
+  },
+};
 const TEMPLATE_CATEGORY_LABELS = {
   all: "全部模板",
   tops: "上衣 / 长衣",
@@ -523,6 +645,345 @@ function getGeneratedStudioProfileSummary() {
 
 function getStudioExecutionProfileSummary() {
   return state.commands.length > 0 ? getGeneratedStudioProfileSummary() : buildCurrentStudioProfileSummary();
+}
+
+function normalizeLayoutRatios(values, fallbackValues) {
+  const fallback = Array.isArray(fallbackValues) && fallbackValues.length > 0 ? fallbackValues : [1];
+  const source = Array.isArray(values) && values.length === fallback.length ? values : fallback;
+  const safeValues = source.map((value, index) => {
+    const numericValue = Number(value);
+    const fallbackValue = Number(fallback[index] ?? 1);
+    return Number.isFinite(numericValue) && numericValue > 0
+      ? numericValue
+      : Math.max(PANEL_LAYOUT_RATIO_MIN, fallbackValue);
+  });
+  const total = safeValues.reduce((sum, value) => sum + value, 0);
+
+  if (!Number.isFinite(total) || total <= 0) {
+    return fallback.map((value) => Math.max(PANEL_LAYOUT_RATIO_MIN, Number(value) || 1));
+  }
+
+  return safeValues.map((value) => Math.max(PANEL_LAYOUT_RATIO_MIN, value / total));
+}
+
+function readPanelLayoutStore() {
+  try {
+    const rawValue = window.localStorage?.getItem(PANEL_LAYOUT_STORAGE_KEY);
+    const parsedValue = rawValue ? JSON.parse(rawValue) : {};
+    return parsedValue && typeof parsedValue === "object" && !Array.isArray(parsedValue)
+      ? parsedValue
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePanelLayoutStore(store) {
+  try {
+    window.localStorage?.setItem(PANEL_LAYOUT_STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    // Layout persistence is best-effort and should not block the tool UI.
+  }
+}
+
+function getPanelLayoutElement(layoutId) {
+  return els.resizableLayouts.find((layout) => layout.dataset.layoutId === layoutId) ?? null;
+}
+
+function getPanelLayoutConfig(layoutId) {
+  return PANEL_LAYOUTS[layoutId] ?? null;
+}
+
+function getLayoutAxisConfig(layoutConfig, axis) {
+  return axis === "x" ? layoutConfig?.columns : layoutConfig?.rows;
+}
+
+function syncPanelLayoutSplitterValue(layoutId, axis, splitterIndex) {
+  const layoutElement = getPanelLayoutElement(layoutId);
+  const layoutConfig = getPanelLayoutConfig(layoutId);
+  const axisConfig = getLayoutAxisConfig(layoutConfig, axis);
+  const trackPixels = layoutElement && axisConfig
+    ? readPanelLayoutAxisTrackPixels(layoutElement, axisConfig, axis)
+    : null;
+
+  if (!trackPixels || splitterIndex < 0 || splitterIndex >= trackPixels.length - 1) {
+    return;
+  }
+
+  const totalPixels = trackPixels.reduce((sum, value) => sum + value, 0);
+  const leadingPixels = trackPixels
+    .slice(0, splitterIndex + 1)
+    .reduce((sum, value) => sum + value, 0);
+  const valueNow = totalPixels > 0 ? Math.round((leadingPixels / totalPixels) * 100) : 50;
+
+  els.layoutSplitters
+    .filter((splitter) => (
+      (splitter.dataset.layoutId ?? "") === layoutId
+      && (splitter.dataset.layoutAxis === "y" ? "y" : "x") === axis
+      && Number(splitter.dataset.layoutIndex ?? 0) === splitterIndex
+    ))
+    .forEach((splitter) => {
+      splitter.setAttribute("aria-valuemin", "8");
+      splitter.setAttribute("aria-valuemax", "92");
+      splitter.setAttribute("aria-valuenow", String(valueNow));
+    });
+}
+
+function syncPanelLayoutSplitterValues(layoutId) {
+  const layoutConfig = getPanelLayoutConfig(layoutId);
+
+  if (!layoutConfig) {
+    return;
+  }
+
+  for (let index = 0; index < layoutConfig.columns.count - 1; index += 1) {
+    syncPanelLayoutSplitterValue(layoutId, "x", index);
+  }
+
+  for (let index = 0; index < layoutConfig.rows.count - 1; index += 1) {
+    syncPanelLayoutSplitterValue(layoutId, "y", index);
+  }
+}
+
+function applyPanelLayoutAxis(layoutElement, axisConfig, values) {
+  if (!layoutElement || !axisConfig) {
+    return;
+  }
+
+  const ratios = normalizeLayoutRatios(values, axisConfig.defaults);
+  axisConfig.vars.forEach((cssVar, index) => {
+    layoutElement.style.setProperty(cssVar, `${ratios[index]}fr`);
+  });
+}
+
+function readPanelLayoutAxisPixels(layoutElement, axisConfig, axis) {
+  const computedStyle = window.getComputedStyle(layoutElement);
+  const templateValue = axis === "x"
+    ? computedStyle.gridTemplateColumns
+    : computedStyle.gridTemplateRows;
+  const trackValues = templateValue
+    .split(" ")
+    .map((track) => Number.parseFloat(track))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const panelTrackValues = [];
+
+  for (let index = 0; index < trackValues.length && panelTrackValues.length < axisConfig.count; index += 2) {
+    panelTrackValues.push(trackValues[index]);
+  }
+
+  if (panelTrackValues.length !== axisConfig.count) {
+    return null;
+  }
+
+  return normalizeLayoutRatios(panelTrackValues, axisConfig.defaults);
+}
+
+function getPanelLayoutTrackMinimum(axisConfig, trackIndex, totalPixels) {
+  const configuredMinimum = axisConfig?.minPixels?.[trackIndex];
+
+  if (Number.isFinite(configuredMinimum) && configuredMinimum > 0) {
+    return configuredMinimum;
+  }
+
+  return Math.max(48, totalPixels * PANEL_LAYOUT_RATIO_MIN);
+}
+
+function readPanelLayoutAxisTrackPixels(layoutElement, axisConfig, axis) {
+  const computedStyle = window.getComputedStyle(layoutElement);
+  const templateValue = axis === "x"
+    ? computedStyle.gridTemplateColumns
+    : computedStyle.gridTemplateRows;
+  const trackValues = templateValue
+    .split(" ")
+    .map((track) => Number.parseFloat(track))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const panelTrackValues = [];
+
+  for (let index = 0; index < trackValues.length && panelTrackValues.length < axisConfig.count; index += 2) {
+    panelTrackValues.push(trackValues[index]);
+  }
+
+  return panelTrackValues.length === axisConfig.count ? panelTrackValues : null;
+}
+
+function applyStoredPanelLayouts() {
+  const store = readPanelLayoutStore();
+
+  els.resizableLayouts.forEach((layoutElement) => {
+    const layoutId = layoutElement.dataset.layoutId ?? "";
+    const layoutConfig = getPanelLayoutConfig(layoutId);
+    const storedLayout = store[layoutId];
+
+    if (!layoutConfig || !storedLayout || typeof storedLayout !== "object") {
+      return;
+    }
+
+    applyPanelLayoutAxis(layoutElement, layoutConfig.columns, storedLayout.columns);
+    applyPanelLayoutAxis(layoutElement, layoutConfig.rows, storedLayout.rows);
+    syncPanelLayoutSplitterValues(layoutId);
+  });
+}
+
+function persistPanelLayout(layoutId) {
+  const layoutElement = getPanelLayoutElement(layoutId);
+  const layoutConfig = getPanelLayoutConfig(layoutId);
+
+  if (!layoutElement || !layoutConfig) {
+    return;
+  }
+
+  const store = readPanelLayoutStore();
+  const previousLayout = store[layoutId] && typeof store[layoutId] === "object"
+    ? store[layoutId]
+    : {};
+  const columns = readPanelLayoutAxisPixels(layoutElement, layoutConfig.columns, "x");
+  const rows = readPanelLayoutAxisPixels(layoutElement, layoutConfig.rows, "y");
+
+  if (!columns && !rows) {
+    return;
+  }
+
+  store[layoutId] = {
+    columns: columns ?? previousLayout.columns ?? normalizeLayoutRatios(layoutConfig.columns.defaults, layoutConfig.columns.defaults),
+    rows: rows ?? previousLayout.rows ?? normalizeLayoutRatios(layoutConfig.rows.defaults, layoutConfig.rows.defaults),
+  };
+  writePanelLayoutStore(store);
+  syncPanelLayoutSplitterValues(layoutId);
+}
+
+function updatePanelLayoutAxis(layoutId, axis, splitterIndex, pixelDelta, basePixels = null) {
+  const layoutElement = getPanelLayoutElement(layoutId);
+  const layoutConfig = getPanelLayoutConfig(layoutId);
+  const axisConfig = getLayoutAxisConfig(layoutConfig, axis);
+
+  if (!layoutElement || !axisConfig || splitterIndex < 0 || splitterIndex >= axisConfig.count - 1) {
+    return;
+  }
+
+  const currentPixels = Array.isArray(basePixels) && basePixels.length === axisConfig.count
+    ? basePixels
+    : readPanelLayoutAxisTrackPixels(layoutElement, axisConfig, axis);
+
+  if (!currentPixels) {
+    return;
+  }
+
+  const nextPixels = [...currentPixels];
+  const leftIndex = splitterIndex;
+  const rightIndex = splitterIndex + 1;
+  let leftValue = nextPixels[leftIndex] + pixelDelta;
+  let rightValue = nextPixels[rightIndex] - pixelDelta;
+  const pairTotalPixels = nextPixels[leftIndex] + nextPixels[rightIndex];
+  const totalPixels = currentPixels.reduce((sum, value) => sum + value, 0);
+  const leftMinimumPixels = getPanelLayoutTrackMinimum(axisConfig, leftIndex, totalPixels);
+  const rightMinimumPixels = getPanelLayoutTrackMinimum(axisConfig, rightIndex, totalPixels);
+  const minimumPairPixels = leftMinimumPixels + rightMinimumPixels;
+
+  if (pairTotalPixels <= minimumPairPixels) {
+    return;
+  }
+
+  if (leftValue < leftMinimumPixels) {
+    leftValue = leftMinimumPixels;
+    rightValue = pairTotalPixels - leftMinimumPixels;
+  } else if (rightValue < rightMinimumPixels) {
+    rightValue = rightMinimumPixels;
+    leftValue = pairTotalPixels - rightMinimumPixels;
+  }
+
+  nextPixels[leftIndex] = leftValue;
+  nextPixels[rightIndex] = rightValue;
+  applyPanelLayoutAxis(layoutElement, axisConfig, nextPixels);
+  syncPanelLayoutSplitterValue(layoutId, axis, splitterIndex);
+}
+
+function initializePanelLayoutSplitters() {
+  applyStoredPanelLayouts();
+
+  els.layoutSplitters.forEach((splitter) => {
+    const layoutId = splitter.dataset.layoutId ?? "";
+    const axis = splitter.dataset.layoutAxis === "y" ? "y" : "x";
+    const splitterIndex = Number(splitter.dataset.layoutIndex ?? 0);
+
+    syncPanelLayoutSplitterValue(layoutId, axis, splitterIndex);
+
+    splitter.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      const startClientPosition = axis === "x" ? event.clientX : event.clientY;
+      const layoutElement = getPanelLayoutElement(layoutId);
+      const layoutConfig = getPanelLayoutConfig(layoutId);
+      const axisConfig = getLayoutAxisConfig(layoutConfig, axis);
+      const startPixels = layoutElement && axisConfig
+        ? readPanelLayoutAxisTrackPixels(layoutElement, axisConfig, axis)
+        : null;
+
+      if (!startPixels) {
+        return;
+      }
+
+      splitter.classList.add("dragging");
+      splitter.setPointerCapture?.(event.pointerId);
+      document.body.classList.add("layout-resizing");
+      document.body.classList.toggle("layout-resizing-y", axis === "y");
+      event.preventDefault();
+
+      const handlePointerMove = (moveEvent) => {
+        const nextClientPosition = axis === "x" ? moveEvent.clientX : moveEvent.clientY;
+        const pixelDelta = nextClientPosition - startClientPosition;
+
+        if (pixelDelta !== 0) {
+          updatePanelLayoutAxis(layoutId, axis, splitterIndex, pixelDelta, startPixels);
+        }
+      };
+
+      const finishDrag = () => {
+        splitter.classList.remove("dragging");
+        document.body.classList.remove("layout-resizing", "layout-resizing-y");
+        persistPanelLayout(layoutId);
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", finishDrag);
+        window.removeEventListener("pointercancel", finishDrag);
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", finishDrag, { once: true });
+      window.addEventListener("pointercancel", finishDrag, { once: true });
+    });
+
+    splitter.addEventListener("keydown", (event) => {
+      const layoutId = splitter.dataset.layoutId ?? "";
+      const axis = splitter.dataset.layoutAxis === "y" ? "y" : "x";
+      const splitterIndex = Number(splitter.dataset.layoutIndex ?? 0);
+      const step = event.shiftKey ? 0.06 : 0.025;
+      let delta = 0;
+
+      if (axis === "x" && event.key === "ArrowLeft") {
+        delta = -step;
+      } else if (axis === "x" && event.key === "ArrowRight") {
+        delta = step;
+      } else if (axis === "y" && event.key === "ArrowUp") {
+        delta = -step;
+      } else if (axis === "y" && event.key === "ArrowDown") {
+        delta = step;
+      } else {
+        return;
+      }
+
+      const layoutElement = getPanelLayoutElement(layoutId);
+      const layoutRect = layoutElement?.getBoundingClientRect();
+      const basisPixels = axis === "x" ? layoutRect?.width : layoutRect?.height;
+
+      if (basisPixels) {
+        updatePanelLayoutAxis(layoutId, axis, splitterIndex, delta * basisPixels);
+        persistPanelLayout(layoutId);
+      }
+
+      event.preventDefault();
+    });
+  });
 }
 
 els.pageTabs.forEach((button) => {
@@ -714,6 +1175,10 @@ els.studioOpenControllerButton.addEventListener("click", () => {
   switchPage("controller");
 });
 
+els.firmwareOpenControllerButton.addEventListener("click", () => {
+  switchPage("controller");
+});
+
 els.firmwareRefreshButton.addEventListener("click", async () => {
   await refreshPorts({
     log: (message) => appendLog(els.firmwareLogOutput, message),
@@ -796,7 +1261,7 @@ els.stopExecutionButton.addEventListener("click", async () => {
 });
 
 els.resetExecutionButton.addEventListener("click", async () => {
-  const shouldReset = window.confirm(
+  const shouldReset = confirmUi(
     "这会强制清除当前卡住的绘制状态，不会继续等待当前命令自然结束。只有在“正在中断绘制”长时间不消失时才建议使用。确定继续吗？",
   );
 
@@ -1525,8 +1990,8 @@ function updateFirmwareResultFromFlashSnapshot(flash) {
 
   if (flash?.status === "completed") {
     const detail = flash.fallbackToAutoDetect
-      ? "固定端口失败后已自动改用 PlatformIO 串口探测并刷入成功，可以继续去手柄测试页读取设备信息。"
-      : "设备已经写入完成，可以继续去手柄测试页读取设备信息。";
+      ? "固定端口失败后已自动改用 PlatformIO 串口探测并刷入成功。下一步请去“手柄测试”页读取设备信息并确认连接状态。"
+      : "设备已经写入完成。下一步请去“手柄测试”页读取设备信息并确认连接状态。";
     setFirmwareResult({
       status: "success",
       title: "固件刷入成功",
@@ -1651,7 +2116,7 @@ async function startFirmwareToolingInstall() {
     return;
   }
 
-  const shouldInstall = window.confirm("刷入固件需要 PlatformIO，未检测到。是否现在安装？");
+  const shouldInstall = confirmUi("刷入固件需要 PlatformIO，未检测到。是否现在安装？");
   if (!shouldInstall) {
     appendLog(els.firmwareLogOutput, "已取消准备 PlatformIO。");
     return;
@@ -1664,7 +2129,7 @@ async function startFirmwareToolingInstall() {
       return;
     }
 
-    allowPythonDownload = window.confirm(
+    allowPythonDownload = confirmUi(
       "安装 PlatformIO 需要 Python。未检测到可用 Python，是否下载一个仅供 Friend Maker 使用的 Python 运行环境？",
     );
 
@@ -1787,7 +2252,7 @@ async function startWindowsSerialDriverInstall(driverId) {
   const installerNote = driverId === "ch341"
     ? "打开 WCH 安装器后请点击 INSTALL。"
     : "应用会调用 pnputil 安装 CP210x 驱动。";
-  const shouldInstall = window.confirm(
+  const shouldInstall = confirmUi(
     `即将安装 ${driverLabel} 串口驱动。Windows 会弹出管理员权限确认。${installerNote} 安装完成后请重新插拔 ESP32，再点击“刷新串口”。是否继续？`,
   );
   if (!shouldInstall) {
@@ -2031,7 +2496,7 @@ els.controllerClearLogButton.addEventListener("click", () => {
 });
 
 els.timingBenchmarkButton.addEventListener("click", async () => {
-  const shouldRun = window.confirm(TIMING_BENCHMARK_MODES.standard.confirmMessage);
+  const shouldRun = confirmUi(TIMING_BENCHMARK_MODES.standard.confirmMessage);
 
   if (!shouldRun) {
     return;
@@ -2041,7 +2506,7 @@ els.timingBenchmarkButton.addEventListener("click", async () => {
 });
 
 els.timingLongBenchmarkButton.addEventListener("click", async () => {
-  const shouldRun = window.confirm(TIMING_BENCHMARK_MODES.long.confirmMessage);
+  const shouldRun = confirmUi(TIMING_BENCHMARK_MODES.long.confirmMessage);
 
   if (!shouldRun) {
     return;
@@ -2051,7 +2516,7 @@ els.timingLongBenchmarkButton.addEventListener("click", async () => {
 });
 
 els.timingReproBenchmarkButton.addEventListener("click", async () => {
-  const shouldRun = window.confirm(TIMING_BENCHMARK_MODES.repro.confirmMessage);
+  const shouldRun = confirmUi(TIMING_BENCHMARK_MODES.repro.confirmMessage);
 
   if (!shouldRun) {
     return;
@@ -2062,6 +2527,18 @@ els.timingReproBenchmarkButton.addEventListener("click", async () => {
 
 els.timingClearLogButton.addEventListener("click", () => {
   clearLog(els.timingLogOutput);
+});
+
+els.windowMinimizeButton?.addEventListener("click", () => {
+  void window.friendMakerWindow?.minimize?.();
+});
+
+els.windowMaximizeButton?.addEventListener("click", () => {
+  void window.friendMakerWindow?.toggleMaximize?.();
+});
+
+els.windowCloseButton?.addEventListener("click", () => {
+  void window.friendMakerWindow?.close?.();
 });
 
 function switchPage(pageName, options = {}) {
@@ -2088,12 +2565,16 @@ function switchPage(pageName, options = {}) {
     }
   }
 
+  syncDesktopShellUi();
+
   if (scrollToPage) {
     const activePage = findPageElement(nextPageName);
-    const scrollTarget = activePage?.querySelector(".page-intro") ?? activePage;
-    scrollTarget?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
+    els.workspaceContent?.scrollTo?.({ left: 0, top: 0, behavior: "smooth" });
+    els.workspaceContent && (els.workspaceContent.scrollLeft = 0);
+    activePage?.scrollTo?.({ top: 0, behavior: "smooth" });
+    activePage?.querySelectorAll(".panel, .preview-column").forEach((panel) => {
+      panel.scrollTop = 0;
+      panel.scrollLeft = 0;
     });
   }
 }
@@ -2105,6 +2586,92 @@ function findPageElement(pageName) {
 function normalizePageName(pageName) {
   const normalizedPageName = typeof pageName === "string" ? pageName.trim() : "";
   return VALID_PAGE_NAMES.has(normalizedPageName) ? normalizedPageName : "studio";
+}
+
+function syncDesktopShellUi() {
+  const copy = PAGE_UI_COPY[state.activePage] ?? PAGE_UI_COPY.studio;
+  const selectedPortLabel = state.selectedPortPath || "未选择";
+  const portStatus = state.serialSession.connected
+    ? `串口已连接：${selectedPortLabel}`
+    : `串口：${selectedPortLabel}`;
+  const hasSelectedPort = Boolean(state.selectedPortPath);
+  const controllerReady = isControllerReadyForStudio();
+  const controllerStatus = controllerReady
+    ? "手柄：已就绪"
+    : `手柄：${state.controller.status.title || "待连接"}`;
+  const executionStatus =
+    state.studio.execution.status === "idle"
+      ? "绘制：未开始"
+      : `绘制：${formatStudioExecutionStatusLabel(state.studio.execution.status)}`;
+
+  if (els.titlePageLabel) {
+    els.titlePageLabel.textContent = copy.title;
+  }
+  if (els.workspaceTitle) {
+    els.workspaceTitle.textContent = copy.title;
+  }
+  if (els.workspaceStatus) {
+    els.workspaceStatus.textContent = copy.status;
+  }
+  if (els.statusbarPage) {
+    els.statusbarPage.textContent = copy.title;
+  }
+  if (els.titlePortStatus) {
+    els.titlePortStatus.textContent = portStatus;
+  }
+  if (els.sidebarPortStatus) {
+    els.sidebarPortStatus.textContent = portStatus;
+  }
+  if (els.sidebarPortDot) {
+    els.sidebarPortDot.className = `status-dot ${
+      state.serialSession.connected
+        ? "status-dot-success"
+        : hasSelectedPort
+          ? "status-dot-warning"
+          : "status-dot-danger"
+    }`;
+  }
+  if (els.statusbarPort) {
+    els.statusbarPort.textContent = portStatus;
+  }
+  if (els.sidebarControllerStatus) {
+    els.sidebarControllerStatus.textContent = controllerStatus;
+  }
+  if (els.sidebarControllerDot) {
+    els.sidebarControllerDot.className = `status-dot ${
+      controllerReady
+        ? "status-dot-success"
+        : isControllerConnectionStillInProgress()
+          ? "status-dot-warning"
+          : "status-dot-danger"
+    }`;
+  }
+  if (els.statusbarController) {
+    els.statusbarController.textContent = controllerStatus;
+  }
+  if (els.statusbarExecution) {
+    els.statusbarExecution.textContent = executionStatus;
+  }
+}
+
+function formatStudioExecutionStatusLabel(status) {
+  switch (status) {
+    case "running":
+      return "进行中";
+    case "paused":
+      return "已暂停";
+    case "stopping":
+      return "正在中断";
+    case "completed":
+      return "已完成";
+    case "stopped":
+      return "已保存恢复点";
+    case "failed":
+    case "error":
+      return "异常中断";
+    default:
+      return "未开始";
+  }
 }
 
 window.addEventListener("hashchange", () => {
@@ -2399,8 +2966,8 @@ async function resumeRecoverySession(sessionId) {
     return;
   }
 
-  const shouldResume = window.confirm(
-    "请确认：你已经先在 Switch 里保存当前画作，并且已经手动重新进入绘画页；从这里开始不要再手动改笔刷，也不要再移动页面。现在开始从恢复点继续吗？",
+  const shouldResume = confirmUi(
+    "请确认：你已经先在 Switch 里保存当前画作，并且已经手动重新进入绘画页；恢复时会自动重新切到这次任务保存的笔刷。从这里开始不要再手动改笔刷，也不要再移动页面。现在开始从恢复点继续吗？",
   );
 
   if (!shouldResume) {
@@ -2434,7 +3001,7 @@ async function resumeRecoverySession(sessionId) {
 }
 
 async function discardRecoverySession(sessionId) {
-  const shouldDiscard = window.confirm("放弃后会删除本地脚本和恢复记录。确定继续吗？");
+  const shouldDiscard = confirmUi("放弃后会删除本地脚本和恢复记录。确定继续吗？");
 
   if (!shouldDiscard) {
     return;
@@ -2881,6 +3448,7 @@ function renderStudioConnectionStatus() {
   els.studioConnectionPill.textContent = pill;
   els.studioConnectionTitle.textContent = title;
   els.studioConnectionDetail.textContent = detail;
+  syncDesktopShellUi();
 }
 
 function renderStudioExecutionStatus() {
@@ -2902,15 +3470,16 @@ function renderStudioExecutionStatus() {
       els.studioExecutionStatus.textContent = `绘制已完成：${execution.completedCommands} / ${execution.totalCommands}`;
       break;
     case "stopped":
-      els.studioExecutionStatus.textContent = `绘制已中断并保存恢复点：${execution.completedCommands} / ${execution.totalCommands}。请先在 Switch 里保存，再手动重新进入绘画页后继续。`;
+      els.studioExecutionStatus.textContent = `绘制已中断并保存恢复点：${execution.completedCommands} / ${execution.totalCommands}。请先在 Switch 里保存，再手动重新进入绘画页后继续；恢复时会自动重新切到上次保存的笔刷。`;
       break;
     case "failed":
-      els.studioExecutionStatus.textContent = `绘制异常中断：${execution.error ?? "请查看执行日志。"} 请先在 Switch 里保存，再手动重新进入绘画页后，从下方恢复任务继续。`;
+      els.studioExecutionStatus.textContent = `绘制异常中断：${execution.error ?? "请查看执行日志。"} 请先在 Switch 里保存，再手动重新进入绘画页后，从下方恢复任务继续；恢复时会自动重新切到上次保存的笔刷。`;
       break;
     default:
       els.studioExecutionStatus.textContent = "当前未开始绘制。";
       break;
   }
+  syncDesktopShellUi();
 }
 
 function renderOfficialPalettePreview() {
@@ -3076,19 +3645,19 @@ function syncStudioUi() {
   els.autoRemoveBackgroundCheckbox.checked = state.studio.removeBackground;
   syncStudioColorCountOptions();
   const backgroundHint = state.studio.removeBackground
-    ? "已开启自动扣背景，会优先去掉白底、浅灰底和棋盘格假透明背景。"
-    : "当前不会自动扣背景；如果素材是白底或棋盘格假透明图，建议开启。";
+    ? "自动扣背景已开启。"
+    : "自动扣背景关闭。";
   const brushShapeHint =
     normalizeBrushShapeValue(state.studio.brushShape) === "square"
-      ? `当前预设是 ${selectedBrushPresetLabel}；开始绘制时设备会先按 X、X 进入笔刷页，再从默认的 7 像素圆点笔刷自动切到这个方块像素笔刷，并连按三次 A 完成选中和返回画布；回到画布后还会额外等待约 3 秒再继续。进入绘画页后不要再手动改笔刷，也不要再移动页面。`
+      ? `${selectedBrushPresetLabel}。开始绘制会自动切笔刷，期间不要手动操作。`
       : state.studio.brushSize === 1
-        ? "当前预设是 1 像素圆形像素笔刷；开始绘制时设备会自动打开笔刷页，切换到这一档后再连按三次 A 返回画布，并等待约 3 秒再继续。"
-        : `当前选的是 ${state.studio.brushSize} 号圆形像素笔刷；这一档暂不支持生成或执行，请切回方块像素笔刷或使用 1 号笔。`;
+        ? "1 像素圆形像素笔刷。开始绘制会自动切笔刷。"
+        : `${state.studio.brushSize} 号圆形像素笔刷暂不支持生成或执行。`;
   const templateHint =
     state.studio.templateId === "none"
-      ? "当前使用正方形画布，不会额外裁掉模板外区域。"
-      : `当前模板是“${state.studio.templateLabel}”，纯模板外区域不会显示；边缘格子只要碰到模板，也会保留绘制来填满可见边缘。`;
-  const scaleHint = `当前导入缩放是 ${state.studio.imageScalePercent}%，100% 表示完整放进画布。`;
+      ? "正方形画布。"
+      : `模板：${state.studio.templateLabel}。`;
+  const scaleHint = `缩放 ${state.studio.imageScalePercent}%。`;
   const positionHint = describeImagePosition(
     state.studio.imageOffsetXPercent,
     state.studio.imageOffsetYPercent,
@@ -3096,18 +3665,18 @@ function syncStudioUi() {
   if (state.studio.colorMode === "mono") {
     els.studioModeHint.textContent =
       unsupportedSelectedBrush
-        ? `${brushShapeHint}${templateHint}${scaleHint}${positionHint}${backgroundHint}`
-        : `深色像素会绘制，浅色像素会保留为空白背景。当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再放进 256x256 脚本坐标画布，并按 ${selectedBrushPresetLabel}和画布中心起步生成脚本。${templateHint}${scaleHint}${positionHint}${brushShapeHint}${backgroundHint}`;
+        ? `${brushShapeHint} ${templateHint} ${scaleHint} ${positionHint} ${backgroundHint}`
+        : `单色模式：深色绘制，浅色留白。${templateHint} ${scaleHint} ${positionHint} ${brushShapeHint} ${backgroundHint}`;
   } else if (state.studio.colorMode === "official") {
     els.studioModeHint.textContent =
       unsupportedSelectedBrush
-        ? `${brushShapeHint}${templateHint}${scaleHint}${positionHint}${backgroundHint}`
-        : `当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再把图片压到 ${state.studio.colorCount} 个官方色以内，并映射到游戏内置的 7x12 官方色盘，再按 ${selectedBrushPresetLabel}生成。${templateHint}${scaleHint}${positionHint}开始前请保持右侧 9 个槽位默认颜色不变。${brushShapeHint}${backgroundHint}`;
+        ? `${brushShapeHint} ${templateHint} ${scaleHint} ${positionHint} ${backgroundHint}`
+        : `官方色模式：最多 ${state.studio.colorCount} 色，映射到 7x12 官方色盘。${templateHint} ${scaleHint} ${positionHint} ${brushShapeHint} ${backgroundHint}`;
   } else {
     els.studioModeHint.textContent =
       unsupportedSelectedBrush
-        ? `${brushShapeHint}${templateHint}${scaleHint}${positionHint}${backgroundHint}`
-        : `当前会先按 ${state.studio.imageScalePercent}% 调整图片大小，再把图片自动量化到最多 ${state.studio.colorCount} 个颜色，并按批次写入游戏的 9 个自定义槽位后进行绘制。下方“当前预览用色”会完整列出这次预览实际用到的全部颜色。${templateHint}${scaleHint}${positionHint}开始前建议先确认手柄链路和 timing 已经稳定；对颜色数量较多或结构较复杂的图片，可以先生成预览再正式开始。${brushShapeHint}${backgroundHint}`;
+        ? `${brushShapeHint} ${templateHint} ${scaleHint} ${positionHint} ${backgroundHint}`
+        : `自定义多色：最多 ${state.studio.colorCount} 色，按 9 个自定义色槽分批绘制。${templateHint} ${scaleHint} ${positionHint} ${brushShapeHint} ${backgroundHint}`;
   }
   els.studioPortSelect.disabled = state.studio.busy || executionActive;
   els.refreshPortsButton.disabled = state.studio.busy || executionActive;
@@ -3207,6 +3776,7 @@ function syncStudioUi() {
         ? `当前会把按 ${generatedProfile.imageScalePercent}% 缩放、${describeImagePosition(generatedProfile.imageOffsetXPercent, generatedProfile.imageOffsetYPercent, false)}后的 256x256 官方色脚本通过串口发送到 ${state.selectedPortPath}，模板为“${generatedProfile.templateLabel}”。请先保持右侧 9 个槽位默认颜色不变；开始后 ESP32 会先按 X、X 打开笔刷页，从默认的 7 像素圆点笔刷自动切到 ${generatedProfile.brushSize} 像素${generatedProfile.brushShape === "round" ? "圆形像素笔刷" : "方块像素笔刷"}，并连按三次 A 完成选中和返回画布；随后会额外等待约 3 秒，再按这组默认槽位状态去配置内置 7x12 色盘并继续绘制。`
         : `当前会把按 ${generatedProfile.imageScalePercent}% 缩放、${describeImagePosition(generatedProfile.imageOffsetXPercent, generatedProfile.imageOffsetYPercent, false)}后的 256x256 自动量化多色脚本通过串口发送到 ${state.selectedPortPath}，模板为“${generatedProfile.templateLabel}”。开始后 ESP32 也会先按 X、X 打开笔刷页，从默认的 7 像素圆点笔刷自动切到 ${generatedProfile.brushSize} 像素${generatedProfile.brushShape === "round" ? "圆形像素笔刷" : "方块像素笔刷"}，并连按三次 A 完成选中和返回画布；随后会额外等待约 3 秒，再分批把当前预览实际用到的颜色写入 9 个自定义槽位后再绘制，这条路线仍处于实验阶段，建议先从颜色较少、结构简单的图片开始。`;
   renderStudioConnectionStatus();
+  syncDesktopShellUi();
 }
 
 function syncFirmwareUi() {
@@ -3220,11 +3790,18 @@ function syncFirmwareUi() {
 
   if (switchModel && environment) {
     els.firmwareEnvHint.textContent = `${switchModel.description} 当前硬件环境：${environment.label}`;
+    els.firmwareWebFlasherHint.textContent =
+      `GitHub Pages 上也有在线刷固件的网站。若改用网页端，请刷入与当前选择的 ${switchModel.label} 对应的版本；刷完后再到“手柄测试”页继续连接。`;
     els.firmwareModelSelect.value = switchModel.id;
     els.firmwareEnvSelect.value = environment.id;
   } else if (environment) {
     els.firmwareEnvHint.textContent = environment.description;
+    els.firmwareWebFlasherHint.textContent =
+      "GitHub Pages 上也有在线刷固件的网站。请在网页端刷入与当前 Switch 型号对应的版本，刷完后再到“手柄测试”页继续连接。";
     els.firmwareEnvSelect.value = environment.id;
+  } else {
+    els.firmwareWebFlasherHint.textContent =
+      "GitHub Pages 上也有在线刷固件的网站。请在网页端刷入与当前 Switch 型号对应的版本，刷完后再到“手柄测试”页继续连接。";
   }
 
   const installStatus = state.firmwareTooling.install?.status ?? "idle";
@@ -3849,6 +4426,7 @@ function renderPortSelects() {
       select.appendChild(option);
     });
   });
+  syncDesktopShellUi();
 }
 
 async function loadFirmwareInfo() {
@@ -4062,6 +4640,7 @@ function renderControllerStatus() {
   els.controllerStatusInitStep.textContent = result.initStep;
   els.controllerStatusInitError.textContent = result.initError;
   els.controllerStatusTime.textContent = metaTime;
+  syncDesktopShellUi();
 }
 
 function firmwareStatusLabel(status) {
@@ -4116,13 +4695,64 @@ function summarizeFirmwareError(message) {
 
 function appendLog(element, message) {
   const time = new Date().toLocaleTimeString();
-  element.textContent = `${element.textContent}\n[${time}] ${message}`.trim();
+  const source = getLogSource(element);
+  const nextSource = `${source}\n[${time}] ${message}`.trim();
+  setLogSource(element, nextSource);
   element.scrollTop = element.scrollHeight;
 }
 
 function clearLog(element) {
-  element.textContent = element.dataset.emptyLog ?? "";
+  setLogSource(element, getEmptyLogSource(element));
   element.scrollTop = 0;
+}
+
+const logSources = new WeakMap();
+
+function getEmptyLogSource(element) {
+  if (element === els.studioLogOutput) {
+    return "等待生成命令...";
+  }
+
+  if (element === els.firmwareLogOutput) {
+    return "等待刷入固件...";
+  }
+
+  if (element === els.controllerLogOutput) {
+    return "等待开始测试...";
+  }
+
+  if (element === els.timingLogOutput) {
+    return "等待开始调试...";
+  }
+
+  return element.dataset.emptyLog ?? "";
+}
+
+function getLogSource(element) {
+  if (logSources.has(element)) {
+    return logSources.get(element) ?? "";
+  }
+
+  const source = getEmptyLogSource(element);
+  logSources.set(element, source);
+  return source;
+}
+
+function setLogSource(element, source) {
+  logSources.set(element, source);
+  element.textContent = translateUiBlock(source);
+}
+
+function refreshLogsForLanguage() {
+  [
+    els.studioLogOutput,
+    els.firmwareLogOutput,
+    els.controllerLogOutput,
+    els.timingLogOutput,
+  ].forEach((element) => {
+    const source = getLogSource(element);
+    element.textContent = translateUiBlock(source);
+  });
 }
 
 function getErrorMessage(error) {
@@ -4446,6 +5076,7 @@ function loadImageElement(dataUrl) {
 }
 
 async function init() {
+  initializePanelLayoutSplitters();
   const initialPageName = normalizePageName(window.location.hash.slice(1));
   switchPage(initialPageName, {
     updateHash: window.location.hash.length > 0,
@@ -4493,4 +5124,16 @@ async function init() {
   }
 }
 
-void init();
+window.FriendMakerI18n?.onLanguageChanged?.(() => refreshLogsForLanguage());
+
+async function startApp() {
+  try {
+    await window.FriendMakerI18n?.ready;
+  } catch (error) {
+    console.warn("Friend Maker i18n failed to initialize; continuing with source language.", error);
+  }
+
+  await init();
+}
+
+void startApp();
