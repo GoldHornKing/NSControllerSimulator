@@ -1707,39 +1707,7 @@ input[type="range"] {
   padding: 10px;
 }
 
-  .timing-guide-head, 
-  .timing-control-head,
-  .timing-benchmark-option-head {
-    display: grid;
-  }
 
-  .page-nav {
-    padding: 8px;
-  }
-
-  .page-tab {
-    min-width: 100%;
-  }
-
-  .studio-connection-card,
-  .mode-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .author-notice {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .action-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .hero-topline,
-  .author-pill-row {
-    align-items: flex-start;
-  }
 
 .statusbar span {
   overflow: hidden;
